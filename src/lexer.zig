@@ -183,37 +183,35 @@ pub const float_max = std.ComptimeStringMap(f128, .{
 
 // All valid keywords.
 pub const keywords = [_][]const u8{
-    "struct", // define struct
-    "interface", // define interface
-    "enum", // define enum
-    "union", // define union
-    "error", // define error
-    "const", // declare constant value
-    "let", // declare variable
-    "mut", // mutable variable
-    "section", // define section
-    "goto", // go to section
-    "while", // define while loop
-    "for", // define for loop
-    "in", // in selector
-    "range", // produce range
-    "break", // loop break
-    "continue", // loop continue
-    "if", // define conditional if statement
-    "else", // define conditional else statement
-    "try", // try error returning block
-    "catch", // catch error from try block
-    "initially", // run block before if or try-catch
-    "finally", // run block after if or try-catch
-    //"package", // define package name
-    //"import", // import package
-    "pub", // publicize declaration
-    "fn", // define function
-    "return", // return from function
-    "match", // define match statement
     "and", // logical and
-    "or", // logical or
+    "break", // loop break
+    "catch", // catch error from try block
+    "const", // declare constant value
+    "continue", // loop continue
+    "else", // define conditional else statement
+    "enum", // define enum
+    "error", // define error
+    "finally", // run block after if or try-catch
+    "fn", // define function
+    "for", // define for loop
+    "goto", // go to section
+    "if", // define conditional if statement
+    "in", // in selector
+    "initially", // run block before if or try-catch
+    "interface", // define interface
+    "let", // declare variable
+    "match", // define match statement
+    "mut", // mutable variable
     "not", // logical not
+    "or", // logical or
+    "pub", // publicize declaration
+    "range", // produce range
+    "return", // return from function
+    "section", // define section
+    "struct", // define struct
+    "try", // try error returning block
+    "union", // define union
+    "while", // define while loop
 };
 
 // Check if "content" (array of bytes) is a valid identifier.
@@ -367,10 +365,10 @@ pub const Lexer = struct {
         var start = self.getTokenStart();
         var end = self.pos.back(1);
 
-        if (containsString(@constCast(&values), content)) {
-            try self.output.append(.{ .start = start, .end = end, .token = .{ .value = content } });
-        } else if (containsString(@constCast(&keywords), content)) {
+        if (containsString(@constCast(&keywords), content)) {
             try self.output.append(.{ .start = start, .end = end, .token = .{ .keyword = content } });
+        } else if (containsString(@constCast(&values), content)) {
+            try self.output.append(.{ .start = start, .end = end, .token = .{ .value = content } });
         } else if (isIdentifier(content)) {
             try self.output.append(.{ .start = start, .end = end, .token = .{ .identifier = content } });
         } else {
@@ -394,9 +392,7 @@ pub const Lexer = struct {
             if (new_lines == 0) {
                 if (self.state == State.char) {
                     try self.messages.printError("new line before character end.", .{}, self.getTokenStart(), self.pos.back(1));
-                } else if (self.state == State.number) {
-                    try self.messages.printError("new line before number end.", .{}, self.getTokenStart(), self.pos.back(1));
-                } else {
+                } else if (self.state == State.none) {
                     try self.addBasicToken();
                 }
             }
@@ -526,6 +522,10 @@ pub const Lexer = struct {
                         number_state = NumberState.float;
                         try self.buffer.append(self.chars[0]);
                     } else if (containsChar(@constCast(&separating_symbols), self.chars[0])) {
+                        break;
+                    } else if (self.chars[1] == '\n') {
+                        try self.buffer.append(self.chars[0]);
+                        try self.advance();
                         break;
                     } else if ((self.chars[0] == 'u' or self.chars[0] == 'i' or self.chars[0] == 'f') and basic) {
                         explicit_type_char = self.chars[0];
