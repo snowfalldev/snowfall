@@ -8,16 +8,16 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     var lexer = Lexer.init(allocator, "main",
-    //\\package main;
-    //\\
+        \\const std = @import("std");
+        \\
         \\pub const test: []const u8 = "test";
-        \\pub fn main() !void {
-        \\    std::println("\u{f09f9280} <- skull");
-        \\    std::println("Hello, world!");
-        \\    std::printf("1 + 2 = {f}\n", 3);
-        \\    std::printf("0.1 * 5.5 = {f}\n", 0.55);
-        \\    std::printf("3 + 1 = {f}\n", 4usize);
-        \\    std::printf("0.2 * 3.3 = {f}\n", 0.33f32);
+        \\pub fn main() {
+        \\    std.println("\u{f09f9280} <- skull");
+        \\    std.println("Hello, world!");
+        \\    std.printf("1 + 2 = {f}\n", 3);
+        \\    std.printf("0.1 * 5.5 = {f}\n", 0.55);
+        \\    std.printf("3 + 1 = {f}\n", 4usize);
+        \\    std.printf("0.2 * 3.3 = {f}\n", 0.33f32);
         \\}
     );
     defer lexer.deinit();

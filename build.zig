@@ -11,23 +11,22 @@ pub fn build(b: *std.Build) anyerror!void {
         .root_source_file = std.Build.FileSource.relative("src/lib.zig"),
         .target = target,
         .optimize = optimize,
-        .version = try std.builtin.Version.parse("0.0.1"),
+        .version = try std.SemanticVersion.parse("0.0.1"),
     });
 
-    lib.install();
+    b.installArtifact(lib);
 
     const exe = b.addExecutable(.{
         .name = "yttrium",
         .root_source_file = std.Build.FileSource.relative("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .version = try std.builtin.Version.parse("0.0.1"),
+        .version = try std.SemanticVersion.parse("0.0.1"),
     });
 
-    exe.install();
+    b.installArtifact(exe);
 
-    const run_cmd = exe.run();
-    run_cmd.step.dependOn(b.getInstallStep());
+    const run_cmd = b.addRunArtifact(exe);
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);

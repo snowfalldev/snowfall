@@ -19,36 +19,74 @@ pub const Block = std.ArrayList(Statement);
 
 pub const Statement = union(enum) {
     function: Function,
-    function_call: FunctionCall,
+    call: Call,
+    builtin_call: BuiltinCall,
     constant: Constant,
     variable: Variable,
 };
 
 // VALUES AND VARIABLES
-pub const Operation = enum {
+pub const Comparator = enum {
+    eq,
+    ne,
+    gt,
+    lt,
+    gt_eq,
+    lt_eq,
+
+    const Self = @This();
+
+    pub inline fn fromDouble(double: []const u8) ?Self {
+        if (std.mem.eql(u8, double, "==")) return Self.eq;
+        if (std.mem.eql(u8, double, "!=")) return Self.ne;
+        if (std.mem.eql(u8, double, ">=")) return Self.gt_eq;
+        if (std.mem.eql(u8, double, "<=")) return Self.lt_eq;
+        return null;
+    }
+
+    pub inline fn fromSymbol(symbol: u8) ?Self {
+        return if (symbol == '>') Self.gt else if (symbol == '<') Self.lt else null;
+    }
+};
+
+pub const LinkOperator = enum {
+    l_and,
+    l_or,
+
+    const Self = @This();
+
+    pub inline fn fromDouble(symbol: u8) ?Self {
+        if (symbol == '&') return Self.l_and;
+        if (symbol == '|') return Self.l_or;
+        return null;
+    }
+};
+
+const operator_symbols = [_]u8{ '&', '|', '!', '~', '^', '*', '/', '%', '+', '-' };
+
+pub const Operator = enum {
     sum,
     sub,
     div,
     mul,
     mod,
+    bw_ls,
+    bw_rs,
     bw_and,
     bw_or,
     bw_not,
-    l_and,
-    l_or,
     l_not,
     xor,
 
     const Self = @This();
 
-    pub fn fromKeyword(keyword: []const u8) ?Self {
-        if (std.mem.eql(u8, keyword, "and")) return Self.l_and;
-        if (std.mem.eql(u8, keyword, "or")) return Self.l_or;
-        if (std.mem.eql(u8, keyword, "not")) return Self.l_not;
+    pub inline fn fromDouble(symbol: u8) ?Self {
+        if (symbol == '<') return Self.bw_ls;
+        if (symbol == '>') return Self.bw_rs;
         return null;
     }
 
-    pub fn fromSymbol(symbol: u8) ?Self {
+    pub inline fn fromSymbol(symbol: u8) ?Self {
         return switch (symbol) {
             '+' => Self.sum,
             '-' => Self.sub,
@@ -58,26 +96,38 @@ pub const Operation = enum {
             '&' => Self.bw_and,
             '|' => Self.bw_or,
             '~' => Self.bw_not,
+            '!' => Self.l_not,
             '^' => Self.xor,
             else => null,
         };
     }
 };
 
-pub const ExpressionElement = union(enum) {
-    identifier: []const u8,
+// EXPRESSIONS
+pub const LiteralExpr = union(enum) {
+    false,
+    true,
+    null,
+    undefined,
+    char: u8,
+    string: []const u8,
     uint: u128,
     int: i128,
     float: f128,
-    function_call: FunctionCall,
-    field_access: FieldAccess,
-    method_call: MethodCall,
 
     const Self = @This();
 
-    pub fn fromToken(token: Token) ?Self {
+    pub inline fn fromToken(token: Token) ?Self {
         return switch (token) {
-            Token.identifier => |identifier| .{ .identifier = identifier },
+            Token.value => |value| {
+                if (std.mem.eql(u8, value, "false")) return Self.false;
+                if (std.mem.eql(u8, value, "true")) return Self.true;
+                if (std.mem.eql(u8, value, "null")) return Self.null;
+                if (std.mem.eql(u8, value, "undefined")) return Self.undefined;
+                unreachable;
+            },
+            Token.char => |char| .{ .char = char },
+            Token.string => |string| .{ .string = string },
             Token.uint => |uint| .{ .uint = uint },
             Token.int => |int| .{ .int = int },
             Token.float => |float| .{ .float = float },
@@ -86,140 +136,150 @@ pub const ExpressionElement = union(enum) {
     }
 };
 
-pub const ExpressionChainItem = union(enum) {
-    expression_element: ExpressionElement,
-    operation: Operation,
+// todo: ermm
+pub const ImmediateExpr = union(enum) {
+    identifier: []const u8,
+    field_access: FieldAccess,
+
+    const Self = @This();
+
+    pub inline fn fromToken(token: Token) ?Self {
+        return if (token == Token.identifier) .{ .identifier = token.identifier } else null;
+    }
+};
+
+pub const NonLiteralExpr = union(enum) {
+    identifier: []const u8,
+    field_access: FieldAccess,
+    call: Call,
+    builtin_call: BuiltinCall,
+
+    const Self = @This();
+
+    pub inline fn fromToken(token: Token) ?Self {
+        return if (token == Token.identifier) .{ .identifier = token.identifier } else null;
+    }
+};
+
+pub const BasicExpression = union(enum) {
+    literal: LiteralExpr,
+    non_literal: NonLiteralExpr,
 
     const Self = @This();
 
     pub fn fromToken(token: Token) ?Self {
-        return switch (token) {
-            Token.identifier, Token.uint, Token.int, Token.float => .{ .expression_element = ExpressionElement.fromToken(token) orelse return null },
-            Token.keyword => |keyword| .{ .operation = Operation.fromKeyword(keyword) orelse return null },
-            Token.symbol => |symbol| .{ .operation = Operation.fromSymbol(symbol) orelse return null },
-            else => null,
-        };
+        if (LiteralExpr.fromToken(token)) |e| {
+            return .{ .literal = e };
+        } else if (NonLiteralExpr.fromToken(token)) |e| {
+            return .{ .non_literal = e };
+        }
+
+        return null;
     }
+};
+
+pub const ExpressionChainItem = union(enum) {
+    basic: BasicExpression,
+    comparator: Comparator,
+    link_operator: LinkOperator,
+    operator: Operator,
 };
 
 pub const ExpressionChain = std.ArrayList(ExpressionChainItem);
 
-pub const ExpressionValue = union(enum) {
-    false,
-    true,
-    null,
-    undefined,
-    char: u8,
-    string: []const u8,
-
-    const Self = @This();
-
-    pub fn fromToken(token: Token) ?Self {
-        return switch (token) {
-            Token.value => |value| if (std.mem.eql(u8, value, "false")) {
-                return Self.false;
-            } else if (std.mem.eql(u8, value, "true")) {
-                return Self.true;
-            } else if (std.mem.eql(u8, value, "null")) {
-                return Self.null;
-            } else if (std.mem.eql(u8, value, "undefined")) {
-                return Self.undefined;
-            } else {
-                unreachable;
-            },
-            Token.char => |char| .{ .char = char },
-            Token.string => |string| .{ .string = string },
-            else => null,
-        };
-    }
+// TYPES
+pub const PointerType = struct {
+    constant: bool = false,
+    slice: bool = false,
+    expression: NonLiteralExpr = undefined,
 };
 
-pub const Expression = union(enum) {
-    value: ExpressionValue, // Constant value.
-    chain: ExpressionChain, // Chain of elements held together by operators.
-
-    const Self = @This();
-
-    pub fn fromToken(allocator: Allocator, token: Token) !?Self {
-        return switch (token) {
-            Token.value, Token.char, Token.string => .{ .value = ExpressionValue.fromToken(token) orelse return null },
-            else => blk: {
-                var chain = try ExpressionChain.initCapacity(allocator, 1);
-                chain.appendAssumeCapacity(ExpressionChainItem.fromToken(token) orelse return null);
-                break :blk .{ .chain = chain };
-            },
-        };
-    }
+pub const ArrayType = struct {
+    size: usize = 0,
+    expression: NonLiteralExpr = undefined,
 };
 
-pub const TypeExpression = union(enum) {
-    single: Expression,
-    array: struct { ?usize, Expression },
+pub const Type = union(enum) {
+    single: NonLiteralExpr,
+    ptr: PointerType,
+    array: ArrayType,
 };
 
+// CONSTANT DECLARATION
 pub const Constant = struct {
     name: []const u8 = "",
-    typ: TypeExpression = undefined,
-    val: Expression = undefined,
+    typ: Type = undefined,
+    val: ExpressionChain = undefined,
     public: bool = false,
 };
 
+// VARIABLE DECLARATION
 pub const Variable = struct {
     name: []const u8 = "",
-    typ: ?TypeExpression = null,
-    val: ?Expression = null,
+    typ: ?Type = null,
+    val: ?ExpressionChain = null,
     mutable: bool = false,
     public: bool = false,
 };
 
-pub const FunctionArgument = struct {
-    name: []const u8 = "",
-    typ: TypeExpression = undefined,
+// VARIABLE ASSIGNMENT
+pub const Assignment = struct {
+    variable: ImmediateExpr,
+    operation: ?Operator,
+    expr: ExpressionChain,
 };
 
 // FUNCTIONS
+pub const FunctionArgument = struct {
+    name: []const u8 = "",
+    typ: Type = undefined,
+};
+
 pub const Function = struct {
     name: []const u8,
-    args: std.ArrayList(FunctionArgument),
+    args: std.MultiArrayList(FunctionArgument),
     body: Block,
     public: bool,
 };
 
-pub const FunctionCall = struct {
+pub const Call = struct {
+    expr: *BasicExpression = undefined,
+    args: std.MultiArrayList(ExpressionChain) = undefined,
+};
+
+pub const BuiltinCall = struct {
     name: []const u8 = "",
-    args: std.ArrayList(Expression) = undefined,
+    args: std.MultiArrayList(ExpressionChain) = undefined,
 };
 
 // OBJECTS
 pub const FieldAccess = struct {
-    object: Expression = undefined,
-    field: []const u8 = "",
-};
-
-pub const MethodCall = struct {
-    object: Expression = undefined,
-    call: FunctionCall = undefined,
+    object: *BasicExpression = undefined,
+    fields: [][]const u8 = &[_][]const u8{},
 };
 
 pub const Field = struct {
-    name: []const u8,
-    typ: Expression,
-    default: ?Expression,
+    name: []const u8 = "",
+    typ: Type = undefined,
+    default: ?*BasicExpression = null,
 };
 
 pub const Struct = struct {
     name: []const u8,
-    fields: std.ArrayList(Field),
-    methods: std.ArrayList(Function),
+    fields: std.MultiArrayList(Field),
+    methods: std.MultiArrayList(Function),
     public: bool,
 };
 
 pub const StatementContext = union(enum) {
-    expression: Expression,
+    chain: ExpressionChain,
+    basic: BasicExpression,
     constant: Constant,
     variable: Variable,
+    assignment: Assignment,
     function: Function,
-    type_expr,
+    field_access: FieldAccess,
+    typ: ?Type,
     public,
 
     const Self = @This();
@@ -229,6 +289,7 @@ pub const StatementContexts = std.ArrayList(StatementContext);
 
 pub const GlobalContext = union(enum) {
     struct_definition,
+    function_block,
 
     const Self = @This();
 };
@@ -260,7 +321,7 @@ pub const Parser = struct {
     const Self = @This();
 
     // Initializes a new parser.
-    pub fn init(allocator: Allocator, tokens: Tokens, name: ?[]const u8, data: ?[]const u8) Self {
+    pub inline fn init(allocator: Allocator, tokens: Tokens, name: ?[]const u8, data: ?[]const u8) Self {
         return .{
             .allocator = allocator,
             .output = Block.init(allocator),
@@ -274,16 +335,12 @@ pub const Parser = struct {
 
     // De-initializes the parser.
     // This should only be run after the output of the parser is done being used.
-    pub fn deinit(self: *Self) void {
+    pub inline fn deinit(self: *Self) void {
         self.output.deinit();
         //self.buffer.deinit();
+        self.statement_contexts.deinit();
+        self.global_contexts.deinit();
         self.messages.deinit();
-    }
-
-    // Get the current context of the parser.
-    pub inline fn getStatementContext(self: *Self, back: usize) ?StatementContext {
-        if (self.statement_contexts.items.len == back) return null;
-        return self.statement_contexts.items[self.statement_contexts.items.len - (1 + back)];
     }
 
     // Get a pointer to the current context of the parser.
@@ -292,17 +349,32 @@ pub const Parser = struct {
         return &self.statement_contexts.items[self.statement_contexts.items.len - (1 + back)];
     }
 
-    // Starts a new expression.
-    pub inline fn startExpressionChain(self: *Self) !void {
-        try self.statement_contexts.append(.{ .expression = .{ .chain = ExpressionChain.init(self.allocator) } });
-    }
-
     // Parse all tokens.
-    pub fn parseFull(self: *Self) !Block {
+    pub inline fn parseFull(self: *Self) !Block {
         while (self.pos < self.tokens.items.len) {
             try self.parseStatement();
         }
         return self.output;
+    }
+
+    inline fn fatal(self: *Self, comptime str: []const u8) !void {
+        var token = self.tokens.items[self.pos];
+        try self.messages.printFatal(str, .{}, token.start, token.end);
+    }
+
+    inline fn isAssignment(self: *Self) bool {
+        if (self.pos + 1 >= self.tokens.items.len) return false;
+        var next = self.tokens.items[self.pos + 1].token;
+        if (next == Token.symbol and next.symbol == '=') return true;
+
+        if (self.pos + 2 >= self.tokens.items.len) return false;
+        var next2 = self.tokens.items[self.pos + 2].token;
+        if ((next == Token.symbol and common.containsChar(@constCast(&operator_symbols), next.symbol)) and (next2 == Token.symbol and next2.symbol == '=')) return true;
+
+        if (self.pos + 3 >= self.tokens.items.len) return false;
+        var next3 = self.tokens.items[self.pos + 3].token;
+        if ((next == Token.symbol and (next.symbol == '>' or next.symbol == '<')) and (next2 == Token.symbol and next2.symbol == next.symbol) and (next3 == Token.symbol and next3.symbol == '=')) return true;
+        return false;
     }
 
     // Parse tokens into the next statement.
@@ -313,148 +385,187 @@ pub const Parser = struct {
             var token = self.tokens.items[self.pos];
 
             switch (token.token) {
-                Token.value => |value| {
-                    _ = value;
-                },
-                Token.char => |char| {
-                    var context = self.getStatementContextPtr(0) orelse {
-                        return self.messages.printFatal("character with no context.", .{}, token.start, token.end);
-                    };
-
-                    if (context.* != StatementContext.expression) {
-                        return self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                    }
-
-                    context.* = .{ .expression = .{ .value = .{ .char = char } } };
-                },
-                Token.string => |string| {
-                    var context = self.getStatementContextPtr(0) orelse {
-                        return self.messages.printFatal("string with no context.", .{}, token.start, token.end);
-                    };
-
-                    if (context.* != StatementContext.expression) {
-                        return self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                    }
-
-                    context.* = .{ .expression = .{ .value = .{ .string = string } } };
-                },
-                Token.uint, Token.int, Token.float => {
-                    var context = self.getStatementContextPtr(0) orelse {
-                        return self.messages.printFatal("number with no context.", .{}, token.start, token.end);
-                    };
-
-                    if (context.* != StatementContext.expression) {
-                        return self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                    }
-
-                    if (context.*.expression == null) {
-                        context.* = .{ .expression = try Expression.fromToken(self.allocator, token.token) };
-                    } else if (context.*.expression == Expression.chain) {
-                        try context.*.expression.chain.append(ExpressionChainItem.fromToken(token.token).?);
+                Token.value, Token.char, Token.string, Token.uint, Token.int, Token.float => {
+                    var ctx = self.getStatementContextPtr(0) orelse return self.fatal("literal with no ctx.");
+                    if (ctx.* == StatementContext.basic) {
+                        ctx.*.basic = BasicExpression.fromToken(token.token).?;
+                    } else if (ctx.* != StatementContext.chain) {
+                        try ctx.*.chain.append(.{ .basic = BasicExpression.fromToken(token.token).? });
                     } else {
-                        return self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
+                        try self.fatal("invalid syntax.");
                     }
                 },
-                Token.keyword => |keyword| {
-                    if (std.mem.eql(u8, "and", keyword) or std.mem.eql(u8, "or", keyword) or std.mem.eql(u8, "not", keyword)) {
-                        var context = self.getStatementContextPtr(0) orelse {
-                            return try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                        };
+                Token.keyword => |keyword| if (std.mem.eql(u8, "pub", keyword)) {
+                    try self.statement_contexts.append(StatementContext.public);
+                } else if (std.mem.eql(u8, "const", keyword)) {
+                    var public: bool = false;
 
-                        if (context.* != StatementContext.expression or context.*.expression != Expression.chain) {
-                            return try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                        }
-
-                        try context.*.expression.chain.append(ExpressionChainItem.fromToken(token.token).?);
-                    } else if (std.mem.eql(u8, "pub", keyword)) {
-                        try self.statement_contexts.append(StatementContext.public);
-                    } else if (std.mem.eql(u8, "const", keyword)) {
-                        try self.statement_contexts.append(.{ .constant = .{} });
-                    } else if (std.mem.eql(u8, "let", keyword)) {
-                        try self.statement_contexts.append(.{ .variable = .{} });
-                    } else if (std.mem.eql(u8, "mut", keyword)) {
-                        if (self.getStatementContextPtr(0)) |context| {
-                            if (context.* == StatementContext.variable) {
-                                context.variable.mutable = true;
-                            } else {
-                                try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                            }
-                        } else {
-                            try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                        }
+                    if (self.getStatementContextPtr(0)) |ctx| if (ctx.* == StatementContext.public) {
+                        public = true;
+                        _ = self.statement_contexts.orderedRemove(0);
+                    } else if (ctx.* == StatementContext.typ and ctx.*.typ != null and ctx.*.typ.? == Type.ptr) {
+                        ctx.*.typ.?.ptr.constant = true;
+                        continue;
                     } else {
-                        try self.messages.printFatal("unknown keyword.", .{}, token.start, token.end);
+                        try self.fatal("invalid syntax.");
+                    };
+
+                    try self.statement_contexts.append(.{ .constant = .{ .public = public } });
+                } else if (std.mem.eql(u8, "let", keyword)) {
+                    var public: bool = false;
+
+                    if (self.getStatementContextPtr(0)) |ctx| if (ctx.* == StatementContext.public) {
+                        public = true;
+                        _ = self.statement_contexts.orderedRemove(0);
+                    } else {
+                        try self.fatal("invalid syntax.");
+                    };
+
+                    try self.statement_contexts.append(.{ .variable = .{ .public = public } });
+                } else if (std.mem.eql(u8, "mut", keyword)) {
+                    var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+
+                    if (ctx.* == StatementContext.variable) {
+                        ctx.variable.mutable = true;
+                    } else {
+                        try self.fatal("invalid syntax.");
                     }
+                } else {
+                    try self.messages.printFatal("unknown keyword.", .{}, token.start, token.end);
                 },
                 Token.symbol => |symbol| switch (symbol) {
-                    '&', '|', '~', '^', '*', '/', '%', '+', '-' => if (self.getStatementContextPtr(0)) |context| {
-                        if (context.* == StatementContext.expression and context.*.expression == Expression.chain) {
-                            try context.expression.chain.append(.{ .operation = Operation.fromSymbol(symbol).? });
+                    '&', '|', '!', '~', '^', '*', '/', '%', '+', '-' => {
+                        var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        if (ctx.* != StatementContext.chain) try self.fatal("invalid syntax.");
+                        if (self.pos + 1 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+                        var next = self.tokens.items[self.pos + 1];
+
+                        if (next.token == Token.symbol) {
+                            if (next.token.symbol == symbol and (symbol == '&' or symbol == '|')) {
+                                try ctx.chain.append(.{ .link_operator = LinkOperator.fromDouble(symbol).? });
+                            } else if (next.token.symbol == '=') {
+                                if (symbol == '!') {}
+                            }
                         } else {
-                            try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
+                            try ctx.chain.append(.{ .operator = Operator.fromSymbol(symbol).? });
                         }
-                    } else {
-                        try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
                     },
+                    '>' => {},
+                    '<' => {},
                     '=' => {
-                        var context = self.getStatementContextPtr(0) orelse {
-                            return self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                        };
+                        var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        if (self.pos + 1 >= self.tokens.items.len) try self.fatal("invalid syntax.");
 
-                        switch (context.*) {
-                            StatementContext.constant, StatementContext.variable => try self.startExpressionChain(),
-                            else => try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end),
+                        var next = self.tokens.items[self.pos + 1].token;
+                        var next_eq = next == Token.symbol and next.symbol == '=';
+
+                        if (ctx.* == StatementContext.constant or ctx.* == StatementContext.variable or ctx.* == StatementContext.assignment) {
+                            if (next_eq) {
+                                self.pos += 1;
+                                try self.fatal("invalid syntax.");
+                            }
+
+                            try self.statement_contexts.append(.{ .chain = ExpressionChain.init(self.allocator) });
+                            continue;
                         }
-                    },
-                    ':' => {
-                        var context = self.getStatementContextPtr(0) orelse {
-                            return self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                        };
 
-                        switch (context.*) {
-                            StatementContext.constant, StatementContext.variable => try self.startExpressionChain(),
-                            else => try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end),
+                        if (ctx.* != StatementContext.chain or !next_eq or self.pos + 2 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+
+                        var next2 = self.tokens.items[self.pos + 2].token;
+
+                        if (next2 == Token.symbol and next2.symbol == '=') {
+                            self.pos += 2;
+                            try self.fatal("invalid syntax.");
+                        }
+
+                        self.pos += 1;
+                        try ctx.*.chain.append(.{ .comparator = Comparator.eq });
+                    },
+                    '?' => {},
+                    ':' => {
+                        var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        switch (ctx.*) {
+                            StatementContext.constant, StatementContext.variable => try self.statement_contexts.append(.{ .chain = ExpressionChain.init(self.allocator) }),
+                            else => try self.fatal("invalid syntax."),
                         }
                     },
                     '[' => {
-                        //try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                    },
-                    ']' => {},
-                    ';' => {
-                        var context = self.getStatementContextPtr(0) orelse {
-                            return self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
-                        };
-
-                        if (self.getStatementContextPtr(1)) |parent_context| {
-                            if (parent_context.* == StatementContext.public) {
-                                if (context.* == StatementContext.constant) {
-                                    context.*.constant.public = true;
-                                } else if (context.* == StatementContext.variable) {
-                                    context.*.variable.public = true;
-                                }
+                        if (self.pos + 1 < self.tokens.items.len) {
+                            var next = self.tokens.items[self.pos + 1];
+                            if (next.token == Token.symbol and next.token.symbol == ']') {
+                                self.pos += 1;
+                            } else {
+                                try self.fatal("invalid syntax.");
                             }
+                        } else {
+                            try self.fatal("invalid syntax.");
                         }
+                        try self.statement_contexts.append(.{ .typ = .{ .ptr = .{ .slice = true } } });
                     },
-                    else => try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end),
+                    ']' => try self.fatal("invalid syntax."),
+                    ';' => {
+                        var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+
+                        switch (ctx.*) {
+                            StatementContext.chain => {
+                                if (self.getStatementContextPtr(1)) |parent| switch (parent.*) {
+                                    StatementContext.constant => {
+                                        parent.*.constant.val = ctx.*.chain;
+                                        try self.output.append(Statement{ .constant = parent.*.constant });
+                                    },
+                                    StatementContext.variable => {
+                                        parent.*.variable.val = ctx.*.chain;
+                                        try self.output.append(Statement{ .variable = parent.*.variable });
+                                    },
+                                    StatementContext.typ => {
+                                        if (self.getStatementContextPtr(2)) |parent2| {
+                                            if (parent2.* != StatementContext.variable) {
+                                                try self.fatal("invalid syntax.");
+                                            }
+                                        }
+                                    },
+                                    else => try self.fatal("invalid syntax."),
+                                };
+                            },
+                            else => try self.fatal("invalid syntax."),
+                        }
+
+                        self.statement_contexts.clearRetainingCapacity();
+                        self.pos += 1;
+
+                        std.debug.print("\n\nOUTPUT: {any}\n\n", .{self.output.items});
+                        break;
+                    },
+                    else => try self.fatal("invalid syntax."),
                 },
                 Token.identifier => |identifier| {
-                    if (self.getStatementContextPtr(0)) |context| {
-                        if (context.* == StatementContext.constant and context.*.constant.name.len == 0) {
-                            context.*.constant.name = identifier;
-                        } else if (context.* == StatementContext.variable and context.*.variable.name.len == 0) {
-                            context.*.variable.name = identifier;
-                        } else if (context.* == StatementContext.expression) {
-                            if (self.getStatementContext(1)) |parent| {
-                                if (parent == StatementContext.type_expr) {}
-                            }
-                        } else { // TODO
-                            return try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
+                    var ctxn = self.getStatementContextPtr(0);
+
+                    if (ctxn == null or ctxn.?.* == StatementContext.field_access) {
+                        if (self.isAssignment()) {} else {
+                            try self.fatal("invalid syntax.");
                         }
+                        continue;
+                    }
+
+                    var ctx = ctxn orelse unreachable;
+
+                    if (ctx.* == StatementContext.constant and ctx.*.constant.name.len == 0) {
+                        ctx.*.constant.name = identifier;
+                    } else if (ctx.* == StatementContext.variable and ctx.*.variable.name.len == 0) {
+                        ctx.*.variable.name = identifier;
+                    } else if (ctx.* == StatementContext.chain) {
+                        try ctx.*.chain.append(.{ .basic = .{ .non_literal = .{ .identifier = identifier } } });
+                        //if (self.getStatementContextPtr(1)) |parent| {
+                        //    if (parent.* == StatementContext.typ) {}
+                        //}
                     } else { // TODO
-                        return try self.messages.printFatal("invalid syntax.", .{}, token.start, token.end);
+                        try self.fatal("invalid syntax.");
                     }
                 },
             }
+
+            std.debug.print("{any}\n", .{self.statement_contexts.items});
         }
     }
 };

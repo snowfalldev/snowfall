@@ -7,6 +7,8 @@ const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
 const minInt = std.math.minInt;
 const maxInt = std.math.maxInt;
+const floatMin = std.math.floatMin;
+const floatMax = std.math.floatMax;
 const parseUnsigned = std.fmt.parseUnsigned;
 const parseInt = std.fmt.parseInt;
 const parseFloat = std.fmt.parseFloat;
@@ -94,37 +96,32 @@ pub const non_dec_number_chars = [_]u8{
     'O', 'O', // octal
 };
 
-// All separating symbols.
-pub const separating_symbols = [_]u8{
-    '&', // bitwise and
-    '|', // bitwise or
+// All valid symbols.
+pub const symbols = [_]u8{
+    '&', // logical/bitwise and
+    '|', // logical/bitwise or
+    '!', // logical not
     '~', // bitwise not
     '^', // bitwise xor
     '<', // less than comparison operator / left shift
     '>', // greater than comparison operator / right shift
     '*', // reference / multiplication operator / comment
     '/', // division operator / comment
-    '}', // close block / array
-    ')', // close tuple / arguments
-    ']', // close array slicer
-    ':', // separate argument and type
-    ',', // separate arguments and array items
-    '=', // set & equals comparison operator
-    '!', // error
-    '%', // modulus operator
-    '+', // addition operator
-    '-', // subtraction operator
-    '?', // optional value
-    '@', // builtins
-    ';', // statement separator
-};
-
-// All valid symbols.
-pub const symbols = separating_symbols ++ [_]u8{
     '{', // open block / array
     '(', // open tuple / arguments
     '[', // open array slicer
-    '#', // annotations
+    '}', // close block / array
+    ')', // close tuple / arguments
+    ']', // close array slicer
+    ':', // explicity types / ternary selection
+    ',', // separate arguments and array items
+    '=', // set & equals comparison operator
+    '%', // modulus operator
+    '+', // addition operator
+    '-', // subtraction operator
+    '?', // ternary operator
+    '@', // builtins / annotations
+    ';', // statement separator
 };
 
 // All valid value literals.
@@ -167,51 +164,49 @@ pub const int_max = std.ComptimeStringMap(i128, .{
 
 // Minimum values for float types.
 pub const float_min = std.ComptimeStringMap(f128, .{
-    .{ "f128", std.math.f128_min },
-    .{ "f64", std.math.f64_min },
-    .{ "f32", std.math.f32_min },
-    .{ "f16", std.math.f16_min },
+    .{ "f128", floatMin(f128) },
+    .{ "f64", floatMin(f64) },
+    .{ "f32", floatMin(f32) },
+    .{ "f16", floatMin(f16) },
 });
 
 // Maximum values for float types.
 pub const float_max = std.ComptimeStringMap(f128, .{
-    .{ "f128", std.math.f128_max },
-    .{ "f64", std.math.f64_max },
-    .{ "f32", std.math.f32_max },
-    .{ "f16", std.math.f16_max },
+    .{ "f128", floatMax(f128) },
+    .{ "f64", floatMax(f64) },
+    .{ "f32", floatMax(f32) },
+    .{ "f16", floatMax(f16) },
 });
 
 // All valid keywords.
 pub const keywords = [_][]const u8{
-    "and", // logical and
-    "break", // loop break
-    "catch", // catch error from try block
-    "const", // declare constant value
-    "continue", // loop continue
-    "else", // define conditional else statement
+    "as", // casting
     "enum", // define enum
     "error", // define error
-    "finally", // run block after if or try-catch
-    "fn", // define function
-    "for", // define for loop
-    "goto", // go to section
+    "throws", // function throws error
+    "raise", // raise error
+    "try", // try error returning block
+    "catch", // catch error from try block
     "if", // define conditional if statement
-    "in", // in selector
-    "initially", // run block before if or try-catch
-    "interface", // define interface
-    "let", // declare variable
+    "else", // define conditional else statement
     "match", // define match statement
-    "mut", // mutable variable
-    "not", // logical not
-    "or", // logical or
     "pub", // publicize declaration
-    "range", // produce range
+    "const", // declare constant value
+    "let", // declare variable
+    "mut", // allow variable mutation
+    "fn", // define function
     "return", // return from function
     "section", // define section
+    "goto", // go to section
     "struct", // define struct
-    "try", // try error returning block
-    "union", // define union
+    "interface", // define interface
+    "loop", // define infinite loop
     "while", // define while loop
+    "for", // define for loop
+    "in", // in selector
+    "range", // produce range
+    "break", // loop break
+    "continue", // loop continue
 };
 
 // Check if "content" (array of bytes) is a valid identifier.
@@ -521,7 +516,7 @@ pub const Lexer = struct {
                         if (number_state == NumberState.float) break;
                         number_state = NumberState.float;
                         try self.buffer.append(self.chars[0]);
-                    } else if (containsChar(@constCast(&separating_symbols), self.chars[0])) {
+                    } else if (containsChar(@constCast(&symbols), self.chars[0])) {
                         break;
                     } else if (self.chars[1] == '\n') {
                         try self.buffer.append(self.chars[0]);
