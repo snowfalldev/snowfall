@@ -1,0 +1,6 @@
+[submodule "qbe"]
+	path = deps/qbe
+	url = git://c9x.me/qbe.git
+[submodule "deps/keystone"]
+	path = deps/keystone
+	url = https://github.com/keystone-engine/keystone.git

@@ -17,6 +17,7 @@ const getOptional = common.getOptional;
 const isNumberChar = common.isNumberChar;
 const isHexadecimalChar = common.isHexadecimalChar;
 const containsChar = common.containsChar;
+const containsCharRuntime = common.containsCharRuntime;
 const containsString = common.containsString;
 
 const Bytes = common.Bytes;
@@ -96,8 +97,8 @@ pub const non_dec_number_chars = [_]u8{
     'O', 'O', // octal
 };
 
-// All valid symbols.
-pub const symbols = [_]u8{
+// All valid separating symbols.
+pub const separating_symbols = [_]u8{
     '&', // logical/bitwise and
     '|', // logical/bitwise or
     '!', // logical not
@@ -122,6 +123,11 @@ pub const symbols = [_]u8{
     '?', // ternary operator
     '@', // builtins / annotations
     ';', // statement separator
+};
+
+// All valid symbols.
+pub const symbols = separating_symbols ++ [_]u8{
+    '.', // field access
 };
 
 // All valid value literals.

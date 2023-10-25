@@ -60,6 +60,11 @@ pub fn containsChar(comptime haystack: []u8, needle: u8) bool {
     return false;
 }
 
+pub fn containsCharRuntime(haystack: []u8, needle: u8) bool {
+    for (haystack) |char| if (char == needle) return true;
+    return false;
+}
+
 pub fn containsString(comptime haystack: [][]const u8, needle: []u8) bool {
     inline for (haystack) |string| if (std.mem.eql(u8, string, needle)) return true;
     return false;

@@ -14,16 +14,45 @@ const Tokens = lexer.Tokens;
 const Position = common.Position;
 const Messages = messages.Messages;
 
-// BLOCKS AND STATEMENTS
-pub const Block = std.ArrayList(Statement);
+// ROOTS / BLOCKS AND INSTRUCTIONS
+pub const Tree = std.ArrayList(Node);
 
-pub const Statement = union(enum) {
+pub const Node = union(enum) {
     function: Function,
     call: Call,
     builtin_call: BuiltinCall,
     constant: Constant,
     variable: Variable,
+    assignment: Assignment,
+    deref: NodeWrapper,
+    pointer: NodeWrapper,
+
+    const Self = @This();
+
+    pub inline fn deref(self: *Self) Self {
+        return .{ .deref = .{self} };
+    }
+
+    pub inline fn pointer(self: *Self) Self {
+        return .{ .pointer = .{self} };
+    }
+
+    pub inline fn root(self: *Self) bool {
+        return switch (self.*) {
+            Self.function, Self.constant => true,
+            else => false,
+        };
+    }
+
+    pub inline fn block(self: *Self) bool {
+        return switch (self.*) {
+            Self.function => false,
+            else => true,
+        };
+    }
 };
+
+pub const NodeWrapper = struct { *Node };
 
 // VALUES AND VARIABLES
 pub const Comparator = enum {
@@ -33,20 +62,6 @@ pub const Comparator = enum {
     lt,
     gt_eq,
     lt_eq,
-
-    const Self = @This();
-
-    pub inline fn fromDouble(double: []const u8) ?Self {
-        if (std.mem.eql(u8, double, "==")) return Self.eq;
-        if (std.mem.eql(u8, double, "!=")) return Self.ne;
-        if (std.mem.eql(u8, double, ">=")) return Self.gt_eq;
-        if (std.mem.eql(u8, double, "<=")) return Self.lt_eq;
-        return null;
-    }
-
-    pub inline fn fromSymbol(symbol: u8) ?Self {
-        return if (symbol == '>') Self.gt else if (symbol == '<') Self.lt else null;
-    }
 };
 
 pub const LinkOperator = enum {
@@ -62,8 +77,6 @@ pub const LinkOperator = enum {
     }
 };
 
-const operator_symbols = [_]u8{ '&', '|', '!', '~', '^', '*', '/', '%', '+', '-' };
-
 pub const Operator = enum {
     sum,
     sub,
@@ -71,7 +84,8 @@ pub const Operator = enum {
     mul,
     mod,
     bw_ls,
-    bw_rs,
+    bw_lrs,
+    bw_ars,
     bw_and,
     bw_or,
     bw_not,
@@ -79,12 +93,6 @@ pub const Operator = enum {
     xor,
 
     const Self = @This();
-
-    pub inline fn fromDouble(symbol: u8) ?Self {
-        if (symbol == '<') return Self.bw_ls;
-        if (symbol == '>') return Self.bw_rs;
-        return null;
-    }
 
     pub inline fn fromSymbol(symbol: u8) ?Self {
         return switch (symbol) {
@@ -136,10 +144,10 @@ pub const LiteralExpr = union(enum) {
     }
 };
 
-// todo: ermm
 pub const ImmediateExpr = union(enum) {
     identifier: []const u8,
     field_access: FieldAccess,
+    deref: NonLiteralExpr,
 
     const Self = @This();
 
@@ -178,8 +186,10 @@ pub const BasicExpression = union(enum) {
     }
 };
 
+// EXPRESSION CHAINS
 pub const ExpressionChainItem = union(enum) {
     basic: BasicExpression,
+    chain: ExpressionChain,
     comparator: Comparator,
     link_operator: LinkOperator,
     operator: Operator,
@@ -224,9 +234,14 @@ pub const Variable = struct {
 
 // VARIABLE ASSIGNMENT
 pub const Assignment = struct {
-    variable: ImmediateExpr,
-    operation: ?Operator,
-    expr: ExpressionChain,
+    variable: ImmediateExpr = undefined,
+    operator: ?Operator = null,
+    expr: ExpressionChain = undefined,
+};
+
+pub const IndexAccess = struct {
+    object: *BasicExpression = undefined,
+    index: ExpressionChain = undefined,
 };
 
 // FUNCTIONS
@@ -235,27 +250,31 @@ pub const FunctionArgument = struct {
     typ: Type = undefined,
 };
 
+pub const FunctionArguments = std.ArrayList(FunctionArgument);
+
 pub const Function = struct {
-    name: []const u8,
-    args: std.MultiArrayList(FunctionArgument),
-    body: Block,
-    public: bool,
+    name: []const u8 = "",
+    args: FunctionArguments = undefined,
+    typ: Type = undefined,
+    body: Tree = undefined,
+    public: bool = false,
 };
 
+// FUNCTION CALLS
 pub const Call = struct {
     expr: *BasicExpression = undefined,
-    args: std.MultiArrayList(ExpressionChain) = undefined,
+    args: std.ArrayList(ExpressionChain) = undefined,
 };
 
 pub const BuiltinCall = struct {
     name: []const u8 = "",
-    args: std.MultiArrayList(ExpressionChain) = undefined,
+    args: std.ArrayList(ExpressionChain) = undefined,
 };
 
-// OBJECTS
+// OBJECTS - FIELDS
 pub const FieldAccess = struct {
     object: *BasicExpression = undefined,
-    fields: [][]const u8 = &[_][]const u8{},
+    field: []const u8 = "",
 };
 
 pub const Field = struct {
@@ -264,44 +283,58 @@ pub const Field = struct {
     default: ?*BasicExpression = null,
 };
 
+// OBJECTS - STRUCT
 pub const Struct = struct {
     name: []const u8,
-    fields: std.MultiArrayList(Field),
-    methods: std.MultiArrayList(Function),
+    fields: std.ArrayList(Field),
+    methods: std.ArrayList(Function),
     public: bool,
 };
 
-pub const StatementContext = union(enum) {
+// INSTRUCTION CONTEXT
+pub const Context = union(enum) {
     chain: ExpressionChain,
-    basic: BasicExpression,
+    basic: ?BasicExpression,
     constant: Constant,
     variable: Variable,
     assignment: Assignment,
     function: Function,
+    func_arg: FunctionArgument,
+    call: Call,
+    builtin_call: BuiltinCall,
     field_access: FieldAccess,
+    index_access: IndexAccess,
     typ: ?Type,
+
+    deref,
+    pointer,
+
+    builtin,
     public,
 
     const Self = @This();
 };
 
-pub const StatementContexts = std.ArrayList(StatementContext);
+pub const Contexts = std.ArrayList(Context);
 
-pub const GlobalContext = union(enum) {
-    struct_definition,
-    function_block,
+// GLOBAL CONTEXT
+pub const FullContextMode = enum { root, block };
 
-    const Self = @This();
+pub const FullContext = struct {
+    mode: FullContextMode,
+    tree: Tree,
+    contexts: Contexts,
 };
 
-pub const GlobalContexts = std.ArrayList(GlobalContext);
+pub const FullContexts = std.ArrayList(FullContext);
 
+// PARSER
 pub const Parser = struct {
     // Stores the allocator used by the parser.
     allocator: Allocator,
 
     // Stores the output from the parser.
-    output: Block,
+    output: Tree,
 
     // Stores the tokens output by the lexer.
     tokens: Tokens,
@@ -309,11 +342,8 @@ pub const Parser = struct {
     // Stores the current parser position.
     pos: usize = 0,
 
-    // Stores the current parser statement contexts.
-    statement_contexts: StatementContexts,
-
-    // Stores the current parser global contexts.
-    global_contexts: GlobalContexts,
+    // Stores the current full parser contexts.
+    full_contexts: FullContexts,
 
     // Stores the message handler used by the parser.
     messages: Messages,
@@ -321,14 +351,16 @@ pub const Parser = struct {
     const Self = @This();
 
     // Initializes a new parser.
-    pub inline fn init(allocator: Allocator, tokens: Tokens, name: ?[]const u8, data: ?[]const u8) Self {
+    pub inline fn init(allocator: Allocator, tokens: Tokens, name: ?[]const u8, data: ?[]const u8) !Self {
+        var full_contexts = try FullContexts.initCapacity(allocator, 1);
+        full_contexts.appendAssumeCapacity(.{ .mode = .root, .tree = Tree.init(allocator), .contexts = Contexts.init(allocator) });
+
         return .{
             .allocator = allocator,
-            .output = Block.init(allocator),
+            .output = Tree.init(allocator),
             .tokens = tokens,
             //.buffer = Tokens.init(allocator),
-            .statement_contexts = StatementContexts.init(allocator),
-            .global_contexts = GlobalContexts.init(allocator),
+            .full_contexts = full_contexts,
             .messages = Messages.init(allocator, name, data),
         };
     }
@@ -336,25 +368,53 @@ pub const Parser = struct {
     // De-initializes the parser.
     // This should only be run after the output of the parser is done being used.
     pub inline fn deinit(self: *Self) void {
-        self.output.deinit();
+        //self.output.deinit();
         //self.buffer.deinit();
-        self.statement_contexts.deinit();
-        self.global_contexts.deinit();
+        self.full_contexts.deinit();
         self.messages.deinit();
     }
 
-    // Get a pointer to the current context of the parser.
-    pub inline fn getStatementContextPtr(self: *Self, back: usize) ?*StatementContext {
-        if (self.statement_contexts.items.len == back) return null;
-        return &self.statement_contexts.items[self.statement_contexts.items.len - (1 + back)];
+    inline fn getFullContextPtr(self: *Self, back: usize) ?*FullContext {
+        if (self.full_contexts.items.len == back) return null;
+        return &self.full_contexts.items[self.full_contexts.items.len - (1 + back)];
     }
 
-    // Parse all tokens.
-    pub inline fn parseFull(self: *Self) !Block {
-        while (self.pos < self.tokens.items.len) {
-            try self.parseStatement();
+    inline fn getContextPtr(self: *Self, back: usize) ?*Context {
+        var full_ctx = self.getFullContextPtr(0) orelse unreachable;
+        if (full_ctx.*.contexts.items.len == back) return null;
+        return &full_ctx.*.contexts.items[full_ctx.*.contexts.items.len - (1 + back)];
+    }
+
+    inline fn appendContext(self: *Self, ctx: Context) !void {
+        var full_ctx = self.getFullContextPtr(0) orelse unreachable;
+        try full_ctx.*.contexts.append(ctx);
+    }
+
+    inline fn popContext(self: *Self) void {
+        var full_ctx = self.getFullContextPtr(0) orelse unreachable;
+        _ = full_ctx.*.contexts.pop();
+    }
+
+    inline fn clearContext(self: *Self) void {
+        var full_ctx = self.getFullContextPtr(0) orelse unreachable;
+        full_ctx.*.contexts.clearRetainingCapacity();
+    }
+
+    inline fn appendNode(self: *Self, node: Node) !void {
+        var full_ctx = self.getFullContextPtr(0) orelse unreachable;
+
+        if (full_ctx.*.mode == FullContextMode.root and @constCast(&node).root()) {
+            try full_ctx.*.tree.append(node);
+        } else if (full_ctx.*.mode == FullContextMode.block and @constCast(&node).block()) {
+            try full_ctx.*.tree.append(node);
+        } else {
+            @panic("welp");
         }
-        return self.output;
+    }
+
+    inline fn inBlock(self: *Self) bool {
+        var full_ctx = self.getFullContextPtr(0) orelse unreachable;
+        return full_ctx.*.mode == .block;
     }
 
     inline fn fatal(self: *Self, comptime str: []const u8) !void {
@@ -362,23 +422,59 @@ pub const Parser = struct {
         try self.messages.printFatal(str, .{}, token.start, token.end);
     }
 
-    inline fn isAssignment(self: *Self) bool {
-        if (self.pos + 1 >= self.tokens.items.len) return false;
-        var next = self.tokens.items[self.pos + 1].token;
-        if (next == Token.symbol and next.symbol == '=') return true;
-
-        if (self.pos + 2 >= self.tokens.items.len) return false;
-        var next2 = self.tokens.items[self.pos + 2].token;
-        if ((next == Token.symbol and common.containsChar(@constCast(&operator_symbols), next.symbol)) and (next2 == Token.symbol and next2.symbol == '=')) return true;
-
-        if (self.pos + 3 >= self.tokens.items.len) return false;
-        var next3 = self.tokens.items[self.pos + 3].token;
-        if ((next == Token.symbol and (next.symbol == '>' or next.symbol == '<')) and (next2 == Token.symbol and next2.symbol == next.symbol) and (next3 == Token.symbol and next3.symbol == '=')) return true;
-        return false;
+    inline fn getTokenRelative(self: *Self, offset: isize) LocatedToken {
+        var idx = @as(isize, @intCast(self.pos)) + offset;
+        if (idx < 0) try self.fatal("invalid syntax.");
+        return self.tokens.items[@as(usize, @intCast(idx))];
     }
 
-    // Parse tokens into the next statement.
-    pub fn parseStatement(self: *Self) !void {
+    inline fn assignment(self: *Self) !?Assignment {
+        if (self.pos + 2 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+
+        var next = self.tokens.items[self.pos + 1].token;
+        if (next != Token.symbol) try self.fatal("invalid syntax.");
+
+        if (next.symbol == '=') {
+            return .{};
+        }
+
+        var next2 = self.tokens.items[self.pos + 2].token;
+        if (next2 != Token.symbol) return null;
+        if (next2.symbol == '=') {
+            return .{ .operator = Operator.fromSymbol(next.symbol) orelse {
+                try self.fatal("invalid syntax.");
+                return null;
+            } };
+        }
+
+        if (self.pos + 3 >= self.tokens.items.len) return null;
+        var next3 = self.tokens.items[self.pos + 3].token;
+        if (next3 != Token.symbol) return null;
+        if ((next.symbol == '>' or next.symbol == '<') and next2.symbol == next.symbol and next3.symbol == '=') {
+            return .{ .operator = if (next.symbol == '>') Operator.bw_lrs else Operator.bw_ls };
+        }
+
+        if (self.pos + 4 >= self.tokens.items.len) return null;
+        var next4 = self.tokens.items[self.pos + 4].token;
+        if (next4 != Token.symbol) return null;
+        if (next.symbol == '>' and next2.symbol == '>' and next3.symbol == '>' and next4.symbol == '=') {
+            return .{ .operator = Operator.bw_ars };
+        }
+
+        return null;
+    }
+
+    // Parse all tokens.
+    pub inline fn parseFull(self: *Self) !Tree {
+        while (self.pos < self.tokens.items.len) {
+            try self.parseNode();
+        }
+        self.output = (self.getFullContextPtr(0) orelse unreachable).*.tree;
+        return self.output;
+    }
+
+    // Parse tokens into the next node.
+    pub fn parseNode(self: *Self) !void {
         var initial_len = self.output.items.len;
 
         while (self.pos < self.tokens.items.len and initial_len == self.output.items.len) : (self.pos += 1) {
@@ -386,46 +482,63 @@ pub const Parser = struct {
 
             switch (token.token) {
                 Token.value, Token.char, Token.string, Token.uint, Token.int, Token.float => {
-                    var ctx = self.getStatementContextPtr(0) orelse return self.fatal("literal with no ctx.");
-                    if (ctx.* == StatementContext.basic) {
+                    var ctx = self.getContextPtr(0) orelse return self.fatal("literal with no context.");
+                    if (ctx.* == Context.basic) {
                         ctx.*.basic = BasicExpression.fromToken(token.token).?;
-                    } else if (ctx.* != StatementContext.chain) {
+                    } else if (ctx.* == Context.chain) {
                         try ctx.*.chain.append(.{ .basic = BasicExpression.fromToken(token.token).? });
                     } else {
                         try self.fatal("invalid syntax.");
                     }
                 },
                 Token.keyword => |keyword| if (std.mem.eql(u8, "pub", keyword)) {
-                    try self.statement_contexts.append(StatementContext.public);
+                    if (self.inBlock()) try self.fatal("public keyword outside of root.");
+                    try self.appendContext(Context.public);
+                } else if (std.mem.eql(u8, "fn", keyword)) {
+                    if (self.inBlock()) try self.fatal("fn keyword outside of root.");
+                    var public: bool = false;
+
+                    if (self.getContextPtr(0)) |ctx| if (ctx.* == Context.public) {
+                        public = true;
+                        self.popContext();
+                    } else {
+                        try self.fatal("invalid syntax.");
+                    };
+
+                    try self.appendContext(.{ .function = .{ .public = public, .args = FunctionArguments.init(self.allocator) } });
                 } else if (std.mem.eql(u8, "const", keyword)) {
                     var public: bool = false;
 
-                    if (self.getStatementContextPtr(0)) |ctx| if (ctx.* == StatementContext.public) {
+                    if (self.getContextPtr(0)) |ctx| if (ctx.* == Context.public) {
                         public = true;
-                        _ = self.statement_contexts.orderedRemove(0);
-                    } else if (ctx.* == StatementContext.typ and ctx.*.typ != null and ctx.*.typ.? == Type.ptr) {
+                        self.popContext();
+                    } else if (ctx.* == Context.typ and ctx.*.typ != null and ctx.*.typ.? == Type.ptr) {
                         ctx.*.typ.?.ptr.constant = true;
                         continue;
                     } else {
                         try self.fatal("invalid syntax.");
                     };
 
-                    try self.statement_contexts.append(.{ .constant = .{ .public = public } });
+                    try self.appendContext(.{ .constant = .{ .public = public } });
                 } else if (std.mem.eql(u8, "let", keyword)) {
                     var public: bool = false;
 
-                    if (self.getStatementContextPtr(0)) |ctx| if (ctx.* == StatementContext.public) {
-                        public = true;
-                        _ = self.statement_contexts.orderedRemove(0);
-                    } else {
-                        try self.fatal("invalid syntax.");
-                    };
+                    if (!self.inBlock()) {
+                        if (self.getContextPtr(0)) |ctx| {
+                            if (ctx.* == Context.public) {
+                                public = true;
+                                self.popContext();
+                            } else {
+                                try self.fatal("invalid syntax.");
+                            }
+                        }
+                    }
 
-                    try self.statement_contexts.append(.{ .variable = .{ .public = public } });
+                    try self.appendContext(.{ .variable = .{ .public = public } });
                 } else if (std.mem.eql(u8, "mut", keyword)) {
-                    var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+                    var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
 
-                    if (ctx.* == StatementContext.variable) {
+                    if (ctx.* == Context.variable) {
                         ctx.variable.mutable = true;
                     } else {
                         try self.fatal("invalid syntax.");
@@ -434,42 +547,75 @@ pub const Parser = struct {
                     try self.messages.printFatal("unknown keyword.", .{}, token.start, token.end);
                 },
                 Token.symbol => |symbol| switch (symbol) {
-                    '&', '|', '!', '~', '^', '*', '/', '%', '+', '-' => {
-                        var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
-                        if (ctx.* != StatementContext.chain) try self.fatal("invalid syntax.");
-                        if (self.pos + 1 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+                    '&', '|', '!', '~', '^', '*', '/', '%', '+', '-', '<', '>' => {
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        if (ctx.* != Context.chain) try self.fatal("invalid syntax.");
+                        if (self.pos + 2 >= self.tokens.items.len) try self.fatal("invalid syntax.");
                         var next = self.tokens.items[self.pos + 1];
+                        var next2 = self.tokens.items[self.pos + 2];
 
                         if (next.token == Token.symbol) {
-                            if (next.token.symbol == symbol and (symbol == '&' or symbol == '|')) {
-                                try ctx.chain.append(.{ .link_operator = LinkOperator.fromDouble(symbol).? });
-                            } else if (next.token.symbol == '=') {
-                                if (symbol == '!') {}
-                            }
-                        } else {
-                            try ctx.chain.append(.{ .operator = Operator.fromSymbol(symbol).? });
+                            if (next.token.symbol == symbol) {
+                                self.pos += 1;
+                                switch (symbol) {
+                                    '&' => try ctx.chain.append(.{ .link_operator = LinkOperator.l_and }),
+                                    '|' => try ctx.chain.append(.{ .link_operator = LinkOperator.l_or }),
+                                    '<' => try ctx.chain.append(.{ .operator = Operator.bw_ls }),
+                                    '>' => if (next2.token == Token.symbol and next2.token.symbol == '>') {
+                                        self.pos += 1;
+                                        try ctx.chain.append(.{ .operator = Operator.bw_ars });
+                                    } else {
+                                        try ctx.chain.append(.{ .operator = Operator.bw_lrs });
+                                    },
+                                    else => {
+                                        self.pos -= 1;
+                                        try ctx.chain.append(.{ .operator = Operator.fromSymbol(symbol).? });
+                                    },
+                                }
+                                continue;
+                            } else if (next.token.symbol == '=') switch (symbol) {
+                                '!' => try ctx.chain.append(.{ .comparator = Comparator.ne }),
+                                '<' => try ctx.chain.append(.{ .comparator = Comparator.lt_eq }),
+                                '>' => try ctx.chain.append(.{ .comparator = Comparator.gt_eq }),
+                                else => try self.fatal("invalid syntax."),
+                            };
+                        } else switch (symbol) {
+                            '<' => try ctx.chain.append(.{ .comparator = Comparator.lt }),
+                            '>' => try ctx.chain.append(.{ .comparator = Comparator.gt }),
+                            else => try ctx.chain.append(.{ .operator = Operator.fromSymbol(symbol).? }),
                         }
                     },
-                    '>' => {},
-                    '<' => {},
                     '=' => {
-                        var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
                         if (self.pos + 1 >= self.tokens.items.len) try self.fatal("invalid syntax.");
 
                         var next = self.tokens.items[self.pos + 1].token;
                         var next_eq = next == Token.symbol and next.symbol == '=';
 
-                        if (ctx.* == StatementContext.constant or ctx.* == StatementContext.variable or ctx.* == StatementContext.assignment) {
+                        if (ctx.* == Context.typ) {
+                            var parent = self.getContextPtr(1) orelse return self.fatal("invalid syntax.");
+                            if (parent.* == Context.constant) {
+                                parent.*.constant.typ = ctx.*.typ.?;
+                            } else if (parent.* == Context.variable) {
+                                parent.*.variable.typ = ctx.*.typ.?;
+                            } else {
+                                try self.fatal("invalid syntax.");
+                            }
+                            ctx = parent;
+                            self.popContext();
+                        }
+
+                        if (ctx.* == Context.constant or ctx.* == Context.variable or ctx.* == Context.assignment) {
                             if (next_eq) {
                                 self.pos += 1;
                                 try self.fatal("invalid syntax.");
                             }
 
-                            try self.statement_contexts.append(.{ .chain = ExpressionChain.init(self.allocator) });
+                            try self.appendContext(.{ .chain = ExpressionChain.init(self.allocator) });
                             continue;
                         }
 
-                        if (ctx.* != StatementContext.chain or !next_eq or self.pos + 2 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+                        if (ctx.* != Context.chain or !next_eq or self.pos + 2 >= self.tokens.items.len) try self.fatal("invalid syntax.");
 
                         var next2 = self.tokens.items[self.pos + 2].token;
 
@@ -483,89 +629,272 @@ pub const Parser = struct {
                     },
                     '?' => {},
                     ':' => {
-                        var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
                         switch (ctx.*) {
-                            StatementContext.constant, StatementContext.variable => try self.statement_contexts.append(.{ .chain = ExpressionChain.init(self.allocator) }),
+                            Context.constant, Context.variable => try self.appendContext(.{ .typ = null }),
                             else => try self.fatal("invalid syntax."),
                         }
                     },
-                    '[' => {
-                        if (self.pos + 1 < self.tokens.items.len) {
-                            var next = self.tokens.items[self.pos + 1];
-                            if (next.token == Token.symbol and next.token.symbol == ']') {
-                                self.pos += 1;
+                    '@' => {
+                        try self.appendContext(Context.builtin);
+                    },
+                    '(' => {
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        if (ctx.* == Context.function) {
+                            if (ctx.*.function.args.items.len == 0) {
+                                try self.appendContext(.{ .func_arg = .{} });
                             } else {
                                 try self.fatal("invalid syntax.");
                             }
                         } else {
+                            try self.appendContext(.{ .chain = ExpressionChain.init(self.allocator) });
+                        }
+                    },
+                    ',' => {
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        var parent = self.getContextPtr(1) orelse return self.fatal("invalid syntax.");
+
+                        if (self.pos + 1 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+                        var next = self.tokens.items[self.pos + 1].token;
+
+                        if (next == Token.symbol) switch (next.symbol) {
+                            '.' => {},
+                            else => {},
+                        };
+
+                        if (ctx.* == Context.typ and parent.* == Context.func_arg) {
+                            // end of argument
+                            var parent2 = self.getContextPtr(2) orelse return self.fatal("invalid syntax.");
+
+                            parent.*.func_arg.typ = ctx.*.typ.?;
+
+                            try parent2.*.function.args.append(parent.*.func_arg);
+                            self.popContext();
+                        } else if (ctx.* == Context.chain and (parent.* == Context.call or parent.* == Context.builtin_call)) {}
+                    },
+                    ')' => {
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
+                        var parent = self.getContextPtr(1) orelse return self.fatal("invalid syntax.");
+
+                        if (self.pos + 1 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+                        var next = self.tokens.items[self.pos + 1].token;
+
+                        if (next == Token.symbol) switch (next.symbol) {
+                            '.' => {},
+                            else => {},
+                        };
+
+                        if (ctx.* == Context.typ and parent.* == Context.func_arg) {
+                            // end of function
+                            var parent2 = self.getContextPtr(2) orelse return self.fatal("invalid syntax.");
+
+                            parent.*.func_arg.typ = ctx.*.typ.?;
+
+                            try parent2.*.function.args.append(parent.*.func_arg);
+                            self.popContext(); // pop typ
+                            self.popContext(); // pop func_arg
+                            try self.appendContext(.{ .typ = null }); // function return type
+                        } else if (ctx.* == Context.func_arg and parent.* == Context.function and parent.*.function.args.items.len == 0) {
+                            // end of function - no args
+                            self.popContext(); // pop func_arg
+                            try self.appendContext(.{ .typ = null }); // function return type
+                        } else if (ctx.* == Context.chain) {
+                            switch (parent.*) {
+                                Context.chain => try parent.*.chain.append(.{ .chain = ctx.*.chain }),
+                                Context.call => try parent.*.call.args.append(ctx.*.chain),
+                                Context.builtin_call => try parent.*.builtin_call.args.append(ctx.*.chain),
+                                else => try self.fatal("invalid syntax."),
+                            }
+                            self.popContext();
+                        } else {
                             try self.fatal("invalid syntax.");
                         }
-                        try self.statement_contexts.append(.{ .typ = .{ .ptr = .{ .slice = true } } });
                     },
-                    ']' => try self.fatal("invalid syntax."),
-                    ';' => {
-                        var ctx = self.getStatementContextPtr(0) orelse return self.fatal("invalid syntax.");
+                    '{' => {
+                        if (self.getContextPtr(0)) |ctx| {
+                            var parento = self.getContextPtr(1);
+                            if (ctx.* == Context.typ and parento != null and parento.?.* == Context.function) {
+                                if (ctx.*.typ != null) parento.?.*.function.typ = ctx.*.typ.?;
+                                try self.full_contexts.append(.{ .mode = .block, .tree = Tree.init(self.allocator), .contexts = Contexts.init(self.allocator) });
+                            }
+                        } else {
+                            try self.full_contexts.append(.{ .mode = .block, .tree = Tree.init(self.allocator), .contexts = Contexts.init(self.allocator) });
+                        }
+                    },
+                    '}' => {
+                        var parent_fc = self.getFullContextPtr(1) orelse return self.fatal("context close without start.");
+                        if (parent_fc.*.contexts.items.len > 0 and parent_fc.*.contexts.items[0] == Context.function) {
+                            try parent_fc.*.tree.append(.{ .function = parent_fc.*.contexts.items[0].function });
+                        }
+                        _ = self.full_contexts.pop();
+                    },
+                    '[' => {
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
+
+                        if (ctx.* == Context.typ) {
+                            if (self.pos + 1 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+                            var next = self.tokens.items[self.pos + 1];
+                            if (next.token != Token.symbol or next.token.symbol != ']') try self.fatal("invalid syntax.");
+                            self.pos += 1;
+                            ctx.*.typ = .{ .ptr = .{ .slice = true } };
+                        }
+                    },
+                    ']' => {
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
 
                         switch (ctx.*) {
-                            StatementContext.chain => {
-                                if (self.getStatementContextPtr(1)) |parent| switch (parent.*) {
-                                    StatementContext.constant => {
-                                        parent.*.constant.val = ctx.*.chain;
-                                        try self.output.append(Statement{ .constant = parent.*.constant });
-                                    },
-                                    StatementContext.variable => {
-                                        parent.*.variable.val = ctx.*.chain;
-                                        try self.output.append(Statement{ .variable = parent.*.variable });
-                                    },
-                                    StatementContext.typ => {
-                                        if (self.getStatementContextPtr(2)) |parent2| {
-                                            if (parent2.* != StatementContext.variable) {
-                                                try self.fatal("invalid syntax.");
-                                            }
-                                        }
-                                    },
-                                    else => try self.fatal("invalid syntax."),
-                                };
+                            Context.chain => |chain| if (self.getContextPtr(1)) |parent| switch (parent.*) {
+                                Context.index_access => {
+                                    parent.*.index_access.index = chain;
+                                },
+                                else => try self.fatal("invalid syntax."),
                             },
                             else => try self.fatal("invalid syntax."),
                         }
+                    },
+                    ';' => {
+                        var ctx = self.getContextPtr(0) orelse return self.fatal("invalid syntax.");
 
-                        self.statement_contexts.clearRetainingCapacity();
+                        switch (ctx.*) {
+                            Context.chain => |chain| if (self.getContextPtr(1)) |parent| switch (parent.*) {
+                                Context.constant => {
+                                    parent.*.constant.val = chain;
+                                    try self.appendNode(Node{ .constant = parent.*.constant });
+                                },
+                                Context.variable => {
+                                    parent.*.variable.val = chain;
+                                    try self.appendNode(Node{ .variable = parent.*.variable });
+                                },
+                                Context.assignment => {
+                                    parent.*.assignment.expr = chain;
+                                    try self.appendNode(Node{ .assignment = parent.*.assignment });
+                                },
+                                Context.typ => {
+                                    if (self.getContextPtr(2)) |parent2| {
+                                        if (parent2.* != Context.variable) {
+                                            try self.fatal("invalid syntax.");
+                                        }
+                                    }
+                                },
+                                else => try self.fatal("invalid syntax."),
+                            },
+                            Context.call => try self.appendNode(Node{ .call = ctx.*.call }),
+                            Context.builtin_call => try self.appendNode(Node{ .builtin_call = ctx.*.builtin_call }),
+                            else => try self.fatal("invalid syntax."),
+                        }
+
+                        self.clearContext();
                         self.pos += 1;
 
-                        std.debug.print("\n\nOUTPUT: {any}\n\n", .{self.output.items});
                         break;
                     },
                     else => try self.fatal("invalid syntax."),
                 },
                 Token.identifier => |identifier| {
-                    var ctxn = self.getStatementContextPtr(0);
+                    // TODO:
+                    // 1. if context is field access, put ident as field
+                    // 2. next char
+                    //    - if ('=' OR op + '=' OR double arrow + '=' OR '>>>='), assignment OR
+                    //    - if '.', start field access (if ctx was field access, put it in object) OR
+                    //    - if '[', start item access / annotation OR
+                    //    - if '(' and ctx is not function, start function (builtin) call OR
+                    //    - if ':' and ctx is function arg, store arg name and start type OR
+                    //    - else, do other stuff
 
-                    if (ctxn == null or ctxn.?.* == StatementContext.field_access) {
-                        if (self.isAssignment()) {} else {
-                            try self.fatal("invalid syntax.");
-                        }
-                        continue;
+                    var ctxo = self.getContextPtr(0);
+
+                    var expr = BasicExpression.fromToken(token.token).?;
+                    var field_access = ctxo != null and ctxo.?.* == Context.field_access;
+                    if (field_access) {
+                        ctxo.?.field_access.field = identifier;
+                        expr = .{ .non_literal = .{ .field_access = ctxo.?.field_access } };
                     }
 
-                    var ctx = ctxn orelse unreachable;
+                    if (self.pos + 1 >= self.tokens.items.len) try self.fatal("invalid syntax.");
+                    var next = self.tokens.items[self.pos + 1].token;
 
-                    if (ctx.* == StatementContext.constant and ctx.*.constant.name.len == 0) {
+                    if (next == Token.symbol) switch (next.symbol) {
+                        '=', '&', '|', '!', '~', '^', '*', '/', '%', '+', '-', '<', '>' => if (ctxo == null or field_access) {
+                            if (try self.assignment()) |a| {
+                                try self.appendContext(.{ .assignment = a });
+                                try self.appendContext(.{ .chain = ExpressionChain.init(self.allocator) });
+                                self.pos += 1;
+                                if (a.operator != null) switch (a.operator.?) {
+                                    Operator.bw_ars => self.pos += 3,
+                                    Operator.bw_lrs, Operator.bw_ls => self.pos += 2,
+                                    else => self.pos += 1,
+                                };
+                                continue;
+                            } else {
+                                try self.fatal("invalid syntax.");
+                            }
+                        },
+                        '.' => {
+                            if (field_access) self.popContext();
+                            try self.appendContext(.{ .field_access = .{ .object = &expr } });
+                            self.pos += 1;
+                            continue;
+                        },
+                        '(' => if (ctxo == null or ctxo.?.* != Context.function) {
+                            if (field_access) self.popContext();
+                            if (ctxo != null and ctxo.?.* == Context.builtin) {
+                                self.popContext();
+                                try self.appendContext(.{ .builtin_call = .{ .name = identifier, .args = std.ArrayList(ExpressionChain).init(self.allocator) } });
+                            } else {
+                                try self.appendContext(.{ .call = .{ .expr = &expr, .args = std.ArrayList(ExpressionChain).init(self.allocator) } });
+                            }
+                            try self.appendContext(.{ .chain = ExpressionChain.init(self.allocator) });
+                            self.pos += 1;
+                            continue;
+                        },
+                        '[' => {
+                            if (ctxo != null and ctxo.?.* == Context.builtin) {
+                                self.popContext(); // TODO
+                                try self.appendContext(.{ .builtin_call = .{ .name = identifier, .args = std.ArrayList(ExpressionChain).init(self.allocator) } });
+                            } else {
+                                try self.appendContext(.{ .index_access = .{ .object = &expr } });
+                            }
+                            try self.appendContext(.{ .chain = ExpressionChain.init(self.allocator) });
+                            self.pos += 1;
+                            continue;
+                        },
+                        ':' => if (ctxo != null and ctxo.?.* == Context.func_arg) {
+                            ctxo.?.*.func_arg.name = identifier;
+                            try self.appendContext(.{ .typ = null });
+                            self.pos += 1;
+                            continue;
+                            // TODO
+                        },
+                        else => {},
+                    };
+
+                    var ctx = ctxo orelse unreachable;
+
+                    if (ctx.* == Context.function and ctx.*.function.name.len == 0) {
+                        ctx.*.function.name = identifier;
+                    } else if (ctx.* == Context.constant and ctx.*.constant.name.len == 0) {
                         ctx.*.constant.name = identifier;
-                    } else if (ctx.* == StatementContext.variable and ctx.*.variable.name.len == 0) {
+                    } else if (ctx.* == Context.variable and ctx.*.variable.name.len == 0) {
                         ctx.*.variable.name = identifier;
-                    } else if (ctx.* == StatementContext.chain) {
+                    } else if (ctx.* == Context.typ) {
+                        if (ctx.*.typ == null) {
+                            ctx.*.typ = .{ .single = expr.non_literal };
+                        } else if (ctx.*.typ.? == Type.ptr) {
+                            ctx.*.typ.?.ptr.expression = expr.non_literal;
+                        } else if (ctx.*.typ.? == Type.array) {
+                            ctx.*.typ.?.array.expression = expr.non_literal;
+                        }
+                    } else if (ctx.* == Context.chain) {
                         try ctx.*.chain.append(.{ .basic = .{ .non_literal = .{ .identifier = identifier } } });
-                        //if (self.getStatementContextPtr(1)) |parent| {
-                        //    if (parent.* == StatementContext.typ) {}
+                        //if (self.getContextPtr(1)) |parent| {
+                        //    if (parent.* == Context.typ) {}
                         //}
                     } else { // TODO
+                        std.debug.print("\n{}\n\n", .{ctx.*});
                         try self.fatal("invalid syntax.");
                     }
                 },
             }
-
-            std.debug.print("{any}\n", .{self.statement_contexts.items});
         }
     }
 };
