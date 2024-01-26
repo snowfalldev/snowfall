@@ -20,39 +20,67 @@ const containsChar = common.containsChar;
 const containsCharRuntime = common.containsCharRuntime;
 const containsString = common.containsString;
 
-const Bytes = common.Bytes;
 const Position = common.Position;
+const Span = common.Span;
 const Messages = messages.Messages;
 
-const number_types = common.number_types;
+// A lexer number.
+// Can be an integer; integer math is quicker so use it for constant operations if appropriate.
+pub const Number = union(enum) {
+    float: f64,
+    int: i53,
+};
+
+// A lexer BigInt.
+// Can be an integer; integer math is quicker so use it for constant operations if appropriate.
+pub const BigInt = union(enum) {
+    int: isize,
+};
 
 // A lexer token.
 pub const Token = union(enum) {
-    value: []u8, // value literal
-    char: u8, // character literal
-    string: []u8, // string literal
-    uint: u128, // uint literal
-    int: i128, // int literal
-    float: f128, // float literal
+    // values
+    null,
+    undefined,
+    boolean: bool,
+    string: []u16,
+    number: Number,
+    bigint: BigInt,
 
-    symbol: u8, // symbol
-    keyword: []u8, // keyword
-    identifier: []u8, // identifier
+    // other
+    symbol: u8,
+    identifier: []u16,
 
     const Self = @This();
 
-    // Convert token to string representation.
+    // Convert from a string representing a basic token (if possible).
+    pub fn fromBasicString(allocator: Allocator, string: []u8) ?Self {
+        if (std.mem.eql(u8, string, "null")) {
+            return Self.null;
+        } else if (std.mem.eql(u8, string, "undefined")) {
+            return Self.undefined;
+        } else if (std.mem.eql(u8, string, "true")) {
+            return .{ .boolean = true };
+        } else if (std.mem.eql(u8, string, "false")) {
+            return .{ .boolean = false };
+        } else if (isIdentifier(string)) {
+            return .{ .identifier = utf8ToUtf16(allocator, string) orelse return null };
+        }
+
+        return null;
+    }
+
+    // Convert a token to string representation.
     pub fn toString(self: Self, allocator: Allocator) ![]u8 {
         return switch (self) {
-            Token.value => |v| try allocPrint(allocator, "value: {s}", .{v}),
-            Token.char => |v| try allocPrint(allocator, "char: {}", .{v}),
+            Token.null => try allocPrint(allocator, "null", .{}),
+            Token.undefined => try allocPrint(allocator, "undefined", .{}),
+            Token.boolean => |v| try allocPrint(allocator, "boolean: {}", .{v}),
             Token.string => |v| try allocPrint(allocator, "string: \"{s}\"", .{v}),
-            Token.uint => |v| try allocPrint(allocator, "uint: {}", .{v}),
-            Token.int => |v| try allocPrint(allocator, "int: {}", .{v}),
-            Token.float => |v| try allocPrint(allocator, "float: {}", .{v}),
+            Token.number => |v| try allocPrint(allocator, "uint: {}", .{v}),
+            Token.bigint => |v| try allocPrint(allocator, "int: {}", .{v}),
 
             Token.symbol => |v| try allocPrint(allocator, "symbol: {c}", .{v}),
-            Token.keyword => |v| try allocPrint(allocator, "keyword: {s}", .{v}),
             Token.identifier => |v| try allocPrint(allocator, "identifier: {s}", .{v}),
         };
     }
@@ -60,41 +88,36 @@ pub const Token = union(enum) {
     // Is the token the end of an expression or an expression itself?
     pub fn isExpression(self: Self) bool {
         return switch (self) {
-            Token.value => true,
-            Token.char => true,
+            Token.null => true,
+            Token.undefined => true,
+            Token.boolean => true,
             Token.string => true,
-            Token.uint => true,
-            Token.int => true,
-            Token.float => true,
+            Token.number => true,
+            Token.bigint => true,
 
             Token.symbol => |symbol| switch (symbol) {
                 ')' => true, // End of function call or expression in parenthesis.
                 else => false,
             },
 
-            Token.keyword => false,
             Token.identifier => true,
         };
     }
 };
 
 pub const LocatedToken = struct {
-    start: Position,
-    end: Position,
+    span: Span,
     token: Token,
-
-    const Self = @This();
-
-    pub inline fn create(start: Position, end: Position, token: Token) Self {
-        return .{ .start = start, .end = end, .token = token };
-    }
 };
+
+pub const Tokens = std.ArrayList(LocatedToken);
 
 // Non-decimal representation characters in numbers.
 pub const non_dec_number_chars = [_]u8{
     'x', 'X', // hexadecimal
     'b', 'B', // binary
     'O', 'O', // octal
+    'e', 'E', // exponent
 };
 
 // All valid separating symbols.
@@ -114,7 +137,7 @@ pub const separating_symbols = [_]u8{
     '}', // close block / array
     ')', // close tuple / arguments
     ']', // close array slicer
-    ':', // explicity types / ternary selection
+    ':', // explicit types (TS) / ternary selection
     ',', // separate arguments and array items
     '=', // set & equals comparison operator
     '%', // modulus operator
@@ -123,6 +146,7 @@ pub const separating_symbols = [_]u8{
     '?', // ternary operator
     '@', // builtins / annotations
     ';', // statement separator
+    '\n', // semicolons are optional
 };
 
 // All valid symbols.
@@ -130,110 +154,15 @@ pub const symbols = separating_symbols ++ [_]u8{
     '.', // field access
 };
 
-// All valid value literals.
-pub const values = [_][]const u8{
-    "true",
-    "false",
-    "null",
-    "undefined",
-};
-
-// Maximum values for uint types.
-pub const uint_max = std.ComptimeStringMap(u128, .{
-    .{ "usize", maxInt(usize) },
-    .{ "u128", maxInt(u128) },
-    .{ "u64", maxInt(u64) },
-    .{ "u32", maxInt(u32) },
-    .{ "u16", maxInt(u16) },
-    .{ "u8", maxInt(u8) },
-});
-
-// Minimum values for int types.
-pub const int_min = std.ComptimeStringMap(i128, .{
-    .{ "isize", minInt(isize) },
-    .{ "i128", minInt(i128) },
-    .{ "i64", minInt(i64) },
-    .{ "i32", minInt(i32) },
-    .{ "i16", minInt(i16) },
-    .{ "i8", minInt(i8) },
-});
-
-// Maximum values for int types.
-pub const int_max = std.ComptimeStringMap(i128, .{
-    .{ "isize", maxInt(isize) },
-    .{ "i128", maxInt(i128) },
-    .{ "i64", maxInt(i64) },
-    .{ "i32", maxInt(i32) },
-    .{ "i16", maxInt(i16) },
-    .{ "i8", maxInt(i8) },
-});
-
-// Minimum values for float types.
-pub const float_min = std.ComptimeStringMap(f128, .{
-    .{ "f128", floatMin(f128) },
-    .{ "f64", floatMin(f64) },
-    .{ "f32", floatMin(f32) },
-    .{ "f16", floatMin(f16) },
-});
-
-// Maximum values for float types.
-pub const float_max = std.ComptimeStringMap(f128, .{
-    .{ "f128", floatMax(f128) },
-    .{ "f64", floatMax(f64) },
-    .{ "f32", floatMax(f32) },
-    .{ "f16", floatMax(f16) },
-});
-
-// All valid keywords.
-pub const keywords = [_][]const u8{
-    "as", // casting
-    "enum", // define enum
-    "error", // define error
-    "throws", // function throws error
-    "raise", // raise error
-    "try", // try error returning block
-    "catch", // catch error from try block
-    "if", // define conditional if statement
-    "else", // define conditional else statement
-    "match", // define match statement
-    "pub", // publicize declaration
-    "const", // declare constant value
-    "let", // declare variable
-    "mut", // allow variable mutation
-    "fn", // define function
-    "return", // return from function
-    "section", // define section
-    "goto", // go to section
-    "struct", // define struct
-    "interface", // define interface
-    "loop", // define infinite loop
-    "while", // define while loop
-    "for", // define for loop
-    "in", // in selector
-    "range", // produce range
-    "break", // loop break
-    "continue", // loop continue
-};
-
 // Check if "content" (array of bytes) is a valid identifier.
 pub inline fn isIdentifier(content: []u8) bool {
     return content.len > 0 and !isNumberChar(content[0]);
 }
 
-pub const NumberState = enum {
-    uint,
-    int,
-    float,
-};
-
-pub const Tokens = std.ArrayList(LocatedToken);
-
-pub const Characters = struct { u8, u8 };
-
 pub const State = enum {
     string,
-    char,
     number,
+    regex,
     none,
 };
 
@@ -244,26 +173,23 @@ pub const Lexer = struct {
     // Stores the output of the lexer run.
     output: Tokens,
 
+    // Stores the name of the file being processed.
+    file: ?[]const u8,
+
     // Stores the file data.
     data: []const u8,
 
-    // Stores the current and next characters.
-    chars: Characters,
-
     // Stores the current position in the data.
     pos: Position = .{ .raw = 0, .row = 0, .col = 0 },
-
-    // Stores characters currently in use to create the next token.
-    buffer: Bytes,
-
-    // Stores the current lexer state.
-    state: State = State.none,
-
-    // Stores the starting position of the current token. Only used for some tokens.
+    // Stores the starting position of the next token. Only used for some tokens.
     token_start: Position = .{ .raw = 0, .row = 0, .col = 0 },
 
-    // Stores the message handler used by the lexer.
-    messages: Messages,
+    // Stores the current and next characters.
+    chars: struct { u8, u8 },
+    // Stores characters currently in use to create the next token.
+    buffer: StringUnmanaged,
+    // Stores the current lexer state.
+    state: State = State.none,
 
     const Self = @This();
 
@@ -277,8 +203,7 @@ pub const Lexer = struct {
                 getOptional(u8, @constCast(data), 0) orelse 0,
                 getOptional(u8, @constCast(data), 1) orelse 0,
             },
-            .buffer = Bytes.init(allocator),
-            .messages = Messages.init(allocator, name, data),
+            .buffer = std.ArrayList(u8).init(allocator),
         };
     }
 
@@ -362,18 +287,12 @@ pub const Lexer = struct {
     pub fn addBasicToken(self: *Self) !void {
         if (self.buffer.items.len == 0) return;
 
-        var content = (try self.buffer.clone()).items;
-        var start = self.getTokenStart();
-        var end = self.pos.back(1);
+        const content = (try self.buffer.clone()).items;
+        const start = self.getTokenStart();
+        const end = self.pos.back(1);
 
-        if (containsString(@constCast(&keywords), content)) {
-            try self.output.append(.{ .start = start, .end = end, .token = .{ .keyword = content } });
-        } else if (containsString(@constCast(&values), content)) {
-            try self.output.append(.{ .start = start, .end = end, .token = .{ .value = content } });
-        } else if (isIdentifier(content)) {
-            try self.output.append(.{ .start = start, .end = end, .token = .{ .identifier = content } });
-        } else {
-            try self.messages.printError("invalid syntax.", .{}, start, end);
+        if (Token.fromBasicString(content)) |token| {
+            try self.output.append(.{ .start = start, .end = end, .token = token });
         }
 
         self.buffer.clearRetainingCapacity();
@@ -390,12 +309,8 @@ pub const Lexer = struct {
         while (self.pos.raw < self.data.len and self.data[self.pos.raw] == '\n') : (new_lines += 1) {
             if (self.state == State.string) try self.buffer.append('\n');
 
-            if (new_lines == 0) {
-                if (self.state == State.char) {
-                    try self.messages.printError("new line before character end.", .{}, self.getTokenStart(), self.pos.back(1));
-                } else if (self.state == State.none) {
-                    try self.addBasicToken();
-                }
+            if (new_lines == 0 and self.state == State.none) {
+                try self.addBasicToken();
             }
 
             self.pos.raw += 1;
@@ -404,7 +319,7 @@ pub const Lexer = struct {
         }
 
         self.chars = .{
-            self.getCharRelative(0),
+            self.data[self.pos.raw],
             self.getCharRelative(1),
         };
     }
@@ -434,47 +349,41 @@ pub const Lexer = struct {
                 }
             },
             'u' => {
-                if (exit == '\'') {
-                    var esc_seq_start = self.pos;
-                    while (self.pos.raw < self.data.len and self.chars[1] != '}') {
-                        try self.advance();
-                    }
-                    try self.messages.printError("UTF-8 multi-character escape sequence used inside a character.", .{}, esc_seq_start, self.pos);
-                    try self.messages.printNote("single characters can be escaped with the '\\x__' format.", .{}, null, null);
-                    try self.buffer.append(0);
-                    return;
-                }
-
                 try self.advance(); // Advance past '\'.
                 try self.advance(); // Advance past 'u'.
-                try self.advance(); // Advance past '{'.
 
-                var second = false;
-                var tmp = try Bytes.initCapacity(self.allocator, 2);
-                var hex = Bytes.init(self.allocator);
-                defer tmp.deinit();
-                defer hex.deinit();
+                if (self.chars[0] == '{') {
+                    try self.advance();
 
-                while (self.pos.raw < self.data.len) : (try self.advance()) {
-                    if (!isHexadecimalChar(self.chars[0])) {
-                        try self.messages.printError("invalid escape sequence.", .{}, self.pos, null);
-                        try self.buffer.append(0);
-                        return;
+                    var second = false;
+                    var tmp = try std.ArrayList(u8).initCapacity(self.allocator, 2);
+                    var hex = std.ArrayList(u8).init(self.allocator);
+                    defer tmp.deinit();
+                    defer hex.deinit();
+
+                    while (self.pos.raw < self.data.len) : (try self.advance()) {
+                        if (!isHexadecimalChar(self.chars[0])) {
+                            try self.messages.printError("invalid escape sequence.", .{}, self.pos, null);
+                            try self.buffer.append(0);
+                            return;
+                        }
+
+                        tmp.appendAssumeCapacity(self.chars[0]);
+
+                        if (second or !isHexadecimalChar(self.chars[1])) {
+                            try hex.append(try parseInt(u8, tmp.items, 16)); // Don't catch; next if statement ensures this will work.
+                            tmp.clearRetainingCapacity();
+                        }
+
+                        if (self.chars[1] == '}') break;
+
+                        second = !second;
                     }
 
-                    tmp.appendAssumeCapacity(self.chars[0]);
-
-                    if (second or !isHexadecimalChar(self.chars[1])) {
-                        try hex.append(try parseInt(u8, tmp.items, 16)); // Don't catch; next if statement ensures this will work.
-                        tmp.clearRetainingCapacity();
-                    }
-
-                    if (self.chars[1] == '}') break;
-
-                    second = !second;
+                    try self.buffer.appendSlice(try hex.toOwnedSlice());
+                } else {
+                    _ = self.data[self.pos.raw .. self.pos.raw + 4];
                 }
-
-                try self.buffer.appendSlice(try hex.toOwnedSlice());
             },
             else => {
                 try self.messages.printError("invalid escape sequence.", .{}, self.pos, null);
@@ -505,11 +414,10 @@ pub const Lexer = struct {
                 self.state = State.number;
 
                 var basic = !(self.chars[0] == '0' and containsChar(@constCast(&non_dec_number_chars), self.chars[1]));
-                var number_state = NumberState.uint;
-                var explicit_type_char: ?u8 = null;
+                var float = false;
+                var bigint = false;
 
                 if (explicit_sign_number) {
-                    number_state = NumberState.int;
                     try self.buffer.append(self.chars[0]);
                     try self.advance();
                 }
@@ -519,8 +427,8 @@ pub const Lexer = struct {
                         try self.buffer.append(self.chars[0]);
                     } else if (self.chars[0] == '.') {
                         if (!basic) try self.messages.printFatal("invalid number format.", .{}, self.pos, self.pos);
-                        if (number_state == NumberState.float) break;
-                        number_state = NumberState.float;
+                        if (float) break;
+                        float = true;
                         try self.buffer.append(self.chars[0]);
                     } else if (containsChar(@constCast(&symbols), self.chars[0])) {
                         break;
@@ -528,8 +436,8 @@ pub const Lexer = struct {
                         try self.buffer.append(self.chars[0]);
                         try self.advance();
                         break;
-                    } else if ((self.chars[0] == 'u' or self.chars[0] == 'i' or self.chars[0] == 'f') and basic) {
-                        explicit_type_char = self.chars[0];
+                    } else if (self.chars[0] == 'n' and !float) {
+                        bigint = true;
                         break;
                     } else {
                         try self.messages.printFatal("invalid number format.", .{}, self.pos, self.pos);
@@ -543,79 +451,19 @@ pub const Lexer = struct {
                 self.startToken();
                 self.buffer.clearRetainingCapacity();
 
-                var type_string: []u8 = switch (number_state) {
-                    NumberState.uint => @constCast("usize"),
-                    NumberState.int => @constCast("isize"),
-                    NumberState.float => @constCast("f32"),
-                };
+                if (bigint) {} else {
+                    if (float) {}
 
-                if (explicit_type_char) |char| {
-                    while (self.pos.raw < self.data.len) : (try self.advance()) {
-                        if (isNumberChar(self.chars[0]) or
-                            self.chars[0] == 'u' or
-                            self.chars[0] == 'f' or
-                            self.chars[0] == 's' or
-                            self.chars[0] == 'i' or
-                            self.chars[0] == 'z' or
-                            self.chars[0] == 'e')
-                        {
-                            try self.buffer.append(self.chars[0]);
-                        } else {
-                            type_string = (try self.buffer.clone()).items;
-                            self.buffer.clearRetainingCapacity();
-                            break;
-                        }
-                    }
+                    var min = int_min.get(type_string).?;
+                    var max = int_max.get(type_string).?;
 
-                    if (char == 'u') {
-                        if (number_state == NumberState.int) {
-                            try self.messages.printError("Unsigned integers cannot be negative.", .{}, self.getTokenStart(), self.pos.back(1));
-                        } else if (number_state == NumberState.float) {
-                            try self.messages.printError("Floats cannot become unsigned integers.", .{}, self.getTokenStart(), self.pos.back(1));
-                        }
-                    } else if (char == 'i' and number_state == NumberState.float) {
-                        try self.messages.printError("Floats cannot become signed integers.", .{}, self.getTokenStart(), self.pos.back(1));
-                    } else if (char == 'f') {
-                        number_state = NumberState.float;
-                    }
-
-                    if (!containsString(@constCast(&number_types), type_string)) {
-                        try self.messages.printFatal("Unknown type.", .{}, self.getTokenStart(), self.pos.back(1));
+                    if (parseFloat(f64, number_data, 0)) |number_value| {
+                        if (number_value < min or number_value > max) try self.messages.printError("number cannot fit in type {s}.", .{type_string}, number_start, number_end);
+                        break :int .{ .int = number_value };
+                    } else |_| { // InvalidCharacter unreachable.
+                        try self.messages.printError("number cannot fit in type {s}.", .{type_string}, number_start, number_end);
                     }
                 }
-
-                var number: Token = switch (number_state) {
-                    NumberState.uint => uint: {
-                        var max = uint_max.get(type_string).?;
-
-                        if (parseUnsigned(u128, number_data, 0)) |number_value| {
-                            if (number_value > max) try self.messages.printError("number cannot fit in type {s}.", .{type_string}, number_start, number_end);
-                            break :uint .{ .uint = number_value };
-                        } else |_| { // InvalidCharacter unreachable.
-                            try self.messages.printError("number cannot fit in type {s}.", .{type_string}, number_start, number_end);
-                        }
-                    },
-                    NumberState.int => int: {
-                        var min = int_min.get(type_string).?;
-                        var max = int_max.get(type_string).?;
-
-                        if (parseInt(i128, number_data, 0)) |number_value| {
-                            if (number_value < min or number_value > max) try self.messages.printError("number cannot fit in type {s}.", .{type_string}, number_start, number_end);
-                            break :int .{ .int = number_value };
-                        } else |_| { // InvalidCharacter unreachable.
-                            try self.messages.printError("number cannot fit in type {s}.", .{type_string}, number_start, number_end);
-                        }
-                    },
-                    NumberState.float => float: {
-                        var min = float_min.get(type_string).?;
-                        var max = float_max.get(type_string).?;
-
-                        if (parseFloat(f128, number_data)) |number_value| {
-                            if (number_value < min or number_value > max) try self.messages.printError("number cannot fit in type {s}.", .{type_string}, number_start, number_end);
-                            break :float .{ .float = number_value };
-                        } else |_| unreachable;
-                    },
-                };
 
                 try self.output.append(.{
                     .start = number_start,
@@ -635,16 +483,17 @@ pub const Lexer = struct {
             }
 
             switch (self.chars[0]) {
-                '"' => { // String lexer.
+                '"', '\'' => { // String lexer.
+                    const exit = self.chars[0];
                     self.startToken();
                     self.state = State.string;
 
                     while (self.pos.raw < self.data.len) : (try self.advance()) {
-                        if (self.chars[1] == '"') {
+                        if (self.chars[1] == exit) {
                             try self.advance();
                             break;
                         } else if (self.chars[1] == '\\') {
-                            try self.lexEscapeSequences('"');
+                            try self.lexEscapeSequences(exit);
                         } else {
                             try self.buffer.append(self.chars[1]);
                         }
@@ -659,59 +508,31 @@ pub const Lexer = struct {
                     self.state = State.none;
                     self.buffer.clearRetainingCapacity();
                 },
-                '\'' => { // Character lexer.
-                    self.startToken();
-                    self.state = State.char;
-                    var char: ?u8 = null;
-
-                    if (self.chars[1] == '\'') {
-                        try self.messages.printError("empty characters not allowed.", .{}, self.pos, self.pos.forward(1));
-                    } else if (self.chars[1] == '\\') {
-                        try self.lexEscapeSequences('\'');
-                        char = self.buffer.items[0];
-                    } else {
-                        char = self.chars[1];
-                    }
-
-                    try self.advance();
-
-                    if (char != null and self.chars[1] != '\'') {
-                        var start = self.getTokenStart();
-                        while (self.pos.raw < self.data.len and self.chars[1] != '\'') {
-                            try self.advance();
-                        }
-                        try self.messages.printError("character is too large.", .{}, start, self.pos);
-                        try self.messages.printNote("strings are defined with double quotes in Yttrium.", .{}, null, null);
-                    }
-
-                    try self.advance();
-
-                    try self.output.append(.{
-                        .start = self.getTokenStart(),
-                        .end = self.pos,
-                        .token = .{ .char = char orelse 0 },
-                    });
-
-                    self.state = State.none;
-                    self.buffer.clearRetainingCapacity();
-                },
-                '/' => switch (self.chars[1]) { // Division or comment.
-                    '/' => while (self.chars[1] != '\n') { // Single-line comment.
+                '/' => switch (self.chars[1]) {
+                    '/' => while (self.chars[1] != '\n') {
+                        // Single-line comment.
                         try self.advance();
                     },
-                    '*' => { // Multi-line comment.
-                        while (!std.mem.eql(u8, &self.chars, "*/")) {
+                    '*' => {
+                        // Multi-line comment.
+                        while (self.chars[0] != '*' and self.chars[1] != '/') {
                             try self.advance();
                         }
                         try self.advance();
                     },
-                    else => { // Symbol.
-                        try self.addBasicToken();
-                        try self.output.append(.{
-                            .start = self.pos,
-                            .end = self.pos,
-                            .token = .{ .symbol = '/' },
-                        });
+                    else => {
+                        const last_token = self.getLastToken();
+
+                        if (last_token != null and !last_token.?.token.isExpression()) {
+                            self.state = State.regex;
+                        } else {
+                            try self.addBasicToken();
+                            try self.output.append(.{
+                                .start = self.pos,
+                                .end = self.pos,
+                                .token = .{ .symbol = '/' },
+                            });
+                        }
                     },
                 },
                 ' ' => try self.addBasicToken(), // Separator; like a symbol but not stored.

@@ -1,9 +1,10 @@
 const std = @import("std");
-const Lexer = @import("lexer.zig").Lexer;
-const Parser = @import("parser.zig").Parser;
+const unicode = @import("unicode.zig");
 
 pub const std_options = struct {
     pub const fmt_max_depth = 3;
+    pub const log_level = .info;
+    //pub const logFn = @import("log.zig").customLogger;
 };
 
 pub fn main() !void {
@@ -11,56 +12,16 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var lexer = Lexer.init(allocator, "main",
-        \\pub const test: []const u8 = "haiii";
-        \\
-        \\pub fn testFunc(string: []const u8, idfk: usize) void {
-        \\  string[0] = 'b';
-        \\  let mut a = 0;
-        \\  a += b;
-        \\  std.println(string);
+    const js =
+        \\function bruh(a) {
+        \\  console.log(a);
         \\}
         \\
-        \\pub fn main() void {
-        \\  testFunc(test, 0);
-        \\  std.println("\u{f09f9280} <- skull");
-        \\  std.println("Hello, world!");
-        \\  std.printf("1 + 2 = {f}\n", 3);
-        \\  std.printf("0.1 * 5.5 = {f}\n", 0.55);
-        \\  std.printf("3 + 1 = {f}\n", 4usize);
-        \\  std.printf("0.2 * 3.3 = {f}\n", 0.33f32);
-        \\  @panic("welp");
-        \\}
-    );
-    //defer lexer.deinit();
+        \\bruh("mЖ丽 😀")
+    ;
 
-    var tokens = try lexer.lexFull();
+    const string_utf8 = try unicode.StaticString.fromUtf8(allocator, js);
+    const string_utf16 = try unicode.StaticString.fromUtf16le(allocator, try string_utf8.toUtf16le(allocator));
 
-    for (tokens.items) |token| {
-        std.debug.print(" - {{{}..{}, {s}}}\n", .{ token.start.col, token.end.col, try token.token.toString(allocator) });
-    }
-
-    var parser = try Parser.init(allocator, tokens, "main", lexer.data);
-    //defer parser.deinit();
-    var tree = try parser.parseFull();
-    lexer.deinit();
-    parser.deinit();
-
-    std.debug.print("AST (items: {})\n", .{parser.output.items.len});
-
-    for (tree.items) |node| {
-        std.debug.print(" - {}\n", .{node});
-    }
-
-    // BENCHMARK
-    //var i: usize = 0;
-    //while (i < 10000) : (i += 1) {
-    //    _ = try lexer.lexFull();
-    //    lexer.clearRetainingCapacity();
-    //}
-
-    // PRINT TOKENS
-    //for ((try lexer.lexFull()).items) |token| {
-    //    std.debug.print(" - {{{}..{}, {s}}}\n", .{ token.start.col, token.end.col, try token.token.toString(allocator) });
-    //}
+    std.debug.print("{s}", .{try string_utf16.toUtf8(allocator)});
 }

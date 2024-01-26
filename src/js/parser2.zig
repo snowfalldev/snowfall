@@ -13,11 +13,6 @@ const Tokens = lexer.Tokens;
 
 const Messages = messages.Messages;
 
-pub const ContextMode = enum {
-    root,
-    block,
-};
-
 pub const Context = struct {
     tree: Tree,
     buffer: Tokens,
@@ -55,15 +50,15 @@ pub const Parser = struct {
         var token = self.tokens.items[self.pos];
 
         switch (token) {
-                Token.value, Token.char, Token.string, Token.uint, Token.int, Token.float => {
-                    var ctx = self.getContextPtr(0) orelse return self.fatal("literal with no context.");
-                    
-                    if (ctx.* == Context.chain) {
-                        try ctx.*.chain.append(.{ .basic = BasicExpression.fromToken(token.token).? });
-                    } else {
-                        try self.fatal("invalid syntax.");
-                    }
-                },
+            Token.value, Token.char, Token.string, Token.uint, Token.int, Token.float => {
+                var ctx = self.getContextPtr(0) orelse return self.fatal("literal with no context.");
+
+                if (ctx.* == Context.chain) {
+                    try ctx.*.chain.append(.{ .basic = BasicExpression.fromToken(token.token).? });
+                } else {
+                    try self.fatal("invalid syntax.");
+                }
+            },
         }
 
         self.pos += 1;

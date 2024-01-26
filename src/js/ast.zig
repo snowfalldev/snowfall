@@ -3,29 +3,15 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Token = @import("lexer.zig").Token;
 
-// TREES -> NODES
-pub const RootTree = std.ArrayList(RootNode);
+pub const Tree = std.ArrayList(Node);
 
-pub const RootNode = union(enum) {
-    function: Function,
-    constant: Constant,
-};
-
-pub const BlockTree = std.ArrayList(BlockNode);
-
-pub const BlockNode = union(enum) {
+pub const Node = union(enum) {
     call: Call,
     builtin_call: BuiltinCall,
+    function: FuncDef,
     constant: Constant,
     variable: Variable,
     assignment: Assignment,
-};
-
-pub const TreeKind = enum { root, block };
-
-pub const Tree = union(TreeKind) {
-    root: RootTree,
-    block: RootNode,
 };
 
 // EXPRESSIONS
@@ -215,22 +201,26 @@ pub const Parameter = struct {
 pub const Parameters = std.ArrayList(Parameter);
 
 pub const Function = struct {
-    name: []const u8 = "",
     params: Parameters = undefined,
     typ: Type = undefined,
     body: Tree = undefined,
     public: bool = false,
 };
 
+pub const FuncDef = struct {
+    name: []const u8 = "",
+    func: Function,
+};
+
 // FUNCTION CALLS
 pub const Call = struct {
     callee: *Operand = undefined,
-    arguments: std.ArrayList(Expression) = undefined,
+    args: std.ArrayList(Expression) = undefined,
 };
 
 pub const BuiltinCall = struct {
     callee: []const u8 = "",
-    arguments: std.ArrayList(Expression) = undefined,
+    args: std.ArrayList(Expression) = undefined,
 };
 
 // OBJECTS - FIELDS
