@@ -1,10 +1,9 @@
 const std = @import("std");
-const unicode = @import("unicode.zig");
+const Lexer = @import("ast.zig").lexer.Lexer;
 
-pub const std_options = struct {
-    pub const fmt_max_depth = 3;
-    pub const log_level = .info;
-    //pub const logFn = @import("log.zig").customLogger;
+pub const std_options = .{
+    .fmt_max_depth = 3,
+    .logFn = @import("log.zig").customLogger,
 };
 
 pub fn main() !void {
@@ -12,16 +11,56 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const js =
-        \\function bruh(a) {
-        \\  console.log(a);
-        \\}
-        \\
-        \\bruh("mЖ丽 😀")
-    ;
+    var lexer = Lexer.init(allocator, .{ .name = "main", .data = 
+    \\pub const test: []const u8 = "haiii";
+    \\
+    \\pub fn testFunc(string: []const u8, idfk: usize) void {
+    \\  string[0] = 'b';
+    \\  var a = 43;
+    \\  a += b;
+    \\  std.printf("%s %d\n", string, a);
+    \\}
+    \\
+    \\pub fn main() void {
+    \\  testFunc(test, -1);
+    \\  std.println("\uF09F9280 <- skull");
+    \\  std.println("Hello, world!");
+    \\  std.printf("1 + 2 = %d\n", 3);
+    \\  std.printf("0.1 * 5.5 = %f\n", 0.55);
+    \\  std.printf("3 + 1 = %d\n", 4usize);
+    \\  std.printf("0.2 * 3.3 = %f\n", 0.33f32);
+    \\  @panic("welp");
+    \\}
+    });
+    defer lexer.deinit();
 
-    const string_utf8 = try unicode.StaticString.fromUtf8(allocator, js);
-    const string_utf16 = try unicode.StaticString.fromUtf16le(allocator, try string_utf8.toUtf16le(allocator));
+    const tokens = try lexer.lexFull();
 
-    std.debug.print("{s}", .{try string_utf16.toUtf8(allocator)});
+    for (tokens.items) |token| {
+        std.debug.print(" - {{{}..{}, {s}}}\n", .{ token.span[0].col, token.span[1].col, try token.token.toString(allocator) });
+    }
+
+    //var parser = try Parser.init(allocator, tokens, "main", lexer.data);
+    //defer parser.deinit();
+    //const tree = try parser.parseFull();
+    //lexer.deinit();
+    //parser.deinit();
+
+    //std.debug.print("AST (items: {})\n", .{parser.output.items.len});
+
+    //for (tree.items) |node| {
+    //    std.debug.print(" - {}\n", .{node});
+    //}
+
+    // BENCHMARK
+    //var i: usize = 0;
+    //while (i < 10000) : (i += 1) {
+    //    _ = try lexer.lexFull();
+    //    lexer.clearRetainingCapacity();
+    //}
+
+    // PRINT TOKENS
+    //for ((try lexer.lexFull()).items) |token| {
+    //    std.debug.print(" - {{{}..{}, {s}}}\n", .{ token.start.col, token.end.col, try token.token.toString(allocator) });
+    //}
 }

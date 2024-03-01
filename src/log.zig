@@ -1,5 +1,5 @@
 const std = @import("std");
-const Span = @import("common.zig").Span;
+const source = @import("ast/source.zig");
 
 pub fn customLogger(
     comptime level: std.log.Level,
@@ -7,7 +7,7 @@ pub fn customLogger(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    const prefix = comptime level.asText() ++ " [" ++ @tagName(scope) ++ "] ";
+    const prefix = "[" ++ @tagName(scope) ++ "] " ++ comptime level.asText() ++ ": ";
 
     // Print the message to stderr, silently ignoring any errors
     std.debug.getStderrMutex().lock();
@@ -16,84 +16,99 @@ pub fn customLogger(
     nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
 }
 
-pub fn info(comptime fmt: []const u8, args: anytype, src: ?[]const u8, span: ?Span) anyerror!void {
-    const str = try std.fmt.allocPrint(self.allocator, fmt, args);
-    std.debug.print("INFO: {s}{s}\n", .{ str, try infoString(self.allocator, self.name, start) });
-    std.debug.print("{s}", .{try dataString(self.allocator, span, self.data)});
-}
+pub fn Logger(comptime scope: @Type(.EnumLiteral)) type {
+    const inner = std.log.scoped(scope);
 
-pub fn warn(comptime fmt: []const u8, args: anytype, src: ?[]const u8, span: ?Span) anyerror!void {
-    const str = try std.fmt.allocPrint(self.allocator, fmt, args);
-    std.debug.print("WARN: {s}{s}\n", .{ str, try infoString(self.allocator, self.name, start) });
-    std.debug.print("{s}", .{try dataString(self.allocator, span, self.data)});
-}
+    return struct {
+        allocator: std.mem.Allocator,
+        src: ?*const source.Source,
 
-pub fn err(comptime fmt: []const u8, args: anytype, src: ?[]const u8, span: ?Span) anyerror!void {
-    std.log.err(fmt ++ "{s}{s}\n{s}", .{});
-    const str = try std.fmt.allocPrint(self.allocator, fmt, args);
-    std.debug.print("ERROR: {s}{s}\n", .{ str, try infoString(self.allocator, self.name, start) });
-    std.debug.print("{s}", .{try dataString(self.allocator, span, self.data)});
-}
+        const Self = @This();
 
-pub fn fatal(comptime fmt: []const u8, args: anytype, span: ?Span) noreturn {
-    _ = try err(fmt, args, span);
-    std.os.exit(1);
-}
-
-inline fn unwrap_span(span: ?Span) struct { struct { ?usize, ?usize }, struct { ?usize, ?usize } } {
-    if (span) |s| {
-        return .{ .{ s.start.row, s.start.col }, .{ s.end.row, s.end.col } };
-    }
-
-    return .{ .{ null, null }, .{ null, null } };
-}
-
-fn infoString(allocator: std.mem.Allocator, name: ?[]const u8, span: ?Span) anyerror![]u8 {
-    if (name == null and span == null) return &[0]u8{};
-
-    var out = std.ArrayList(u8).init(allocator);
-    errdefer out.deinit();
-
-    if (name) |nm| {
-        try out.appendSlice(" (");
-        try out.appendSlice(nm);
-    }
-
-    if (span) |s| {
-        if (name != null) {
-            try out.appendSlice(try std.fmt.allocPrint(allocator, ", {}:{})", .{ s.start.row + 1, s.start.col + 1 }));
-        } else {
-            try out.appendSlice(try std.fmt.allocPrint(allocator, " ({}:{})", .{ s.start.row + 1, s.start.col + 1 }));
+        pub fn init(allocator: std.mem.Allocator, src: ?*const source.Source) Self {
+            return .{
+                .allocator = allocator,
+                .src = src,
+            };
         }
-    } else if (name != null) {
-        try out.append(')');
-    }
 
-    return out.toOwnedSlice();
-}
+        pub fn err(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) anyerror!void {
+            const str = try std.fmt.allocPrint(self.allocator, fmt, args);
+            inner.err("{s}{s}\n{s}", .{ str, try self.infoString(span), try self.dataString(span) });
+        }
 
-fn dataString(allocator: std.mem.Allocator, span: ?Span, data: ?[]const u8) anyerror![]u8 {
-    if (data == null or span == null) return &[0]u8{};
-    const s = span.?;
-    const d = data.?;
+        pub fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) noreturn {
+            _ = self.err(fmt, args, span) catch @panic("OOM on fatal error");
+            std.os.exit(1);
+        }
 
-    const line_start_pos = s.start.raw - s.start.col;
-    var line_end_pos: usize = line_start_pos;
-    while (line_end_pos < d.len and d[line_end_pos] != '\n') : (line_end_pos += 1) {}
+        pub fn warn(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) anyerror!void {
+            const str = try std.fmt.allocPrint(self.allocator, fmt, args);
+            inner.warn("{s}{s}\n{s}", .{ str, try self.infoString(span), try self.dataString(span) });
+        }
 
-    var out = std.ArrayList(u8).init(allocator);
-    errdefer out.deinit();
-    try out.appendSlice(d[line_start_pos..line_end_pos]);
-    try out.append('\n');
+        pub fn info(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) anyerror!void {
+            const str = try std.fmt.allocPrint(self.allocator, fmt, args);
+            inner.info("{s}{s}\n{s}", .{ str, try self.infoString(span), try self.dataString(span) });
+        }
 
-    var i: usize = 0;
-    while (i < s.start.col) : (i += 1) try out.append(' ');
-    if (s.end.col > s.start.col) {
-        try out.append('^');
-        i += 1;
-        while (i < s.end.col + 1) : (i += 1) try out.append('~');
-    }
-    try out.append('\n');
+        pub fn debug(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) anyerror!void {
+            const str = try std.fmt.allocPrint(self.allocator, fmt, args);
+            inner.debug("{s}{s}\n{s}", .{ str, try self.infoString(span), try self.dataString(span) });
+        }
 
-    return try std.unicode.utf16leToUtf8Alloc(allocator, try out.toOwnedSlice());
+        fn infoString(self: *Self, span: ?source.Span) anyerror![]u8 {
+            if (self.src == null and span == null) return &[0]u8{};
+
+            var out = std.ArrayList(u8).init(self.allocator);
+            errdefer out.deinit();
+
+            var name = false;
+            if (self.src) |src| {
+                if (src.name) |nm| {
+                    name = true;
+                    try out.appendSlice(" (");
+                    try out.appendSlice(nm);
+                }
+            }
+
+            if (span) |s| {
+                if (name) {
+                    try out.appendSlice(try std.fmt.allocPrint(self.allocator, ", {}:{})", .{ s[0].row + 1, s[0].col + 1 }));
+                } else {
+                    try out.appendSlice(try std.fmt.allocPrint(self.allocator, " ({}:{})", .{ s[0].row + 1, s[0].col + 1 }));
+                }
+            } else if (name) {
+                try out.append(')');
+            }
+
+            return out.toOwnedSlice();
+        }
+
+        fn dataString(self: *Self, span: ?source.Span) anyerror![]u8 {
+            if (self.src == null or span == null) return &[0]u8{};
+            const s = span.?;
+            const d = self.src.?.data;
+
+            const line_start_pos = s[0].raw - s[0].col;
+            var line_end_pos: usize = line_start_pos;
+            while (line_end_pos < d.len and d[line_end_pos] != '\n') : (line_end_pos += 1) {}
+
+            var out = std.ArrayList(u8).init(self.allocator);
+            errdefer out.deinit();
+            try out.appendSlice(d[line_start_pos..line_end_pos]);
+            try out.append('\n');
+
+            var i: usize = 0;
+            while (i < s[0].col) : (i += 1) try out.append(' ');
+            if (s[1].col > s[0].col) {
+                try out.append('^');
+                i += 1;
+                while (i < s[1].col + 1) : (i += 1) try out.append('~');
+            }
+            try out.append('\n');
+
+            return out.toOwnedSlice();
+        }
+    };
 }

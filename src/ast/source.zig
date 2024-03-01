@@ -1,12 +1,12 @@
-pub const SourceFile = struct {
+pub const Source = struct {
     name: ?[]const u8,
-    data: @import("unicode.zig").StringUnmanaged,
+    data: []const u8,
 };
 
 pub const Position = struct {
-    raw: usize,
-    row: usize,
-    col: usize,
+    raw: usize = 0,
+    row: usize = 0,
+    col: usize = 0,
 
     // Returns the position, back N characters.
     // Raw and row must be over 0.
@@ -28,4 +28,4 @@ pub const Position = struct {
     }
 };
 
-pub const Span = struct { Position, Position };
+pub const Span = struct { Position = .{}, Position = .{} };

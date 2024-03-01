@@ -1,11 +1,11 @@
+pub const lexer = @import("ast/lexer.zig");
+
 const std = @import("std");
-
 const Allocator = std.mem.Allocator;
-const Token = @import("lexer.zig").Token;
+const Token = lexer.Token;
 
-pub const Tree = std.ArrayList(Node);
-
-pub const Node = union(enum) {
+// STATEMENTS
+pub const Statement = union(enum) {
     call: Call,
     builtin_call: BuiltinCall,
     function: FuncDef,
@@ -13,6 +13,8 @@ pub const Node = union(enum) {
     variable: Variable,
     assignment: Assignment,
 };
+
+pub const Block = std.ArrayList(Statement);
 
 // EXPRESSIONS
 pub const Comparator = enum {
@@ -107,6 +109,7 @@ pub const LiteralOperand = union(enum) {
 pub const NonLiteralOperand = union(enum) {
     identifier: []const u8,
     field_access: FieldAccess,
+    index_access: IndexAccess,
     call: Call,
     builtin_call: BuiltinCall,
 
@@ -203,7 +206,7 @@ pub const Parameters = std.ArrayList(Parameter);
 pub const Function = struct {
     params: Parameters = undefined,
     typ: Type = undefined,
-    body: Tree = undefined,
+    body: Block = undefined,
     public: bool = false,
 };
 
@@ -230,7 +233,6 @@ pub const FieldAccess = struct {
 };
 
 pub const Field = struct {
-    name: []const u8 = "",
     typ: Type = undefined,
     default: ?*Expression = null,
     public: bool = false,
@@ -238,6 +240,16 @@ pub const Field = struct {
 
 // OBJECTS - STRUCT
 pub const Struct = struct {
-    fields: std.ArrayList(Field),
-    methods: std.ArrayList(Function),
+    fields: std.StringHashMap(Field),
+    methods: std.StringHashMap(Function),
+};
+
+// OBJECTS - ENUM
+pub const EnumOption = union(enum) {
+    empty,
+};
+
+pub const Enum = struct {
+    options: std.StringHashMap(EnumOption),
+    methods: std.StringHashMap(Function),
 };

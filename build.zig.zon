@@ -1,0 +1,13 @@
+.{
+    .name = "tungsten",
+    .version = "0.0.0",
+    .dependencies = .{
+        //.unicode = .{
+        //    .url = "https://github.com/notsatvrn/zig-unicode/archive/0fac033b1c4001281d73cd05b81ff4f8d5e96ccd.tar.gz",
+        //    .hash = "122009903614f8e65191ae094fa7556844f819f709bcfca7ab10559947d55bd8f269",
+        //},
+    },
+    .paths = .{
+        "",
+    },
+}

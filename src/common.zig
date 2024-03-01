@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn containsChar(comptime haystack: []u8, needle: u8) bool {
+pub fn containsChar(comptime haystack: []const u8, needle: u8) bool {
     inline for (haystack) |char| if (char == needle) return true;
     return false;
 }
