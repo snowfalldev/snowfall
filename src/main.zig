@@ -16,7 +16,7 @@ pub fn main() !void {
     \\
     \\pub fn testFunc(string: []const u8, idfk: usize) void {
     \\  string[0] = 'b';
-    \\  var a = 43;
+    \\  let mut a = 43;
     \\  a += b;
     \\  std.printf("%s %d\n", string, a);
     \\}

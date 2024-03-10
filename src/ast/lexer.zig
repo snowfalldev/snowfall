@@ -148,7 +148,6 @@ pub const symbols = separating_symbols ++ [_]u8{
 // All valid keywords.
 pub const keywords = [_][]const u8{
     "as", // casting
-    "enum", // define enum
     "error", // define error
     "throws", // function throws error
     "raise", // raise error
@@ -159,13 +158,14 @@ pub const keywords = [_][]const u8{
     "switch", // define switch statement
     "pub", // publicize declaration
     "const", // declare constant value
-    "let", // declare variable
-    "mut", // allow variable mutation
+    "var", // declare variable
     "fn", // define function
     "return", // return from function
     "section", // define section
     "goto", // go to section
     "struct", // define struct
+    "enum", // define enum
+    "union", // define union
     "interface", // define interface
     "loop", // define infinite loop
     "while", // define while loop

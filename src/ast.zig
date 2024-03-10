@@ -5,7 +5,7 @@ const Allocator = std.mem.Allocator;
 const Token = lexer.Token;
 
 // STATEMENTS
-pub const Statement = union(enum) {
+pub const BlockStatement = union(enum) {
     call: Call,
     builtin_call: BuiltinCall,
     function: FuncDef,
@@ -14,7 +14,7 @@ pub const Statement = union(enum) {
     assignment: Assignment,
 };
 
-pub const Block = std.ArrayList(Statement);
+pub const Block = std.ArrayList(BlockStatement);
 
 // EXPRESSIONS
 pub const Comparator = enum {
@@ -164,11 +164,11 @@ pub const Type = union(enum) {
     single: NonLiteralOperand,
     ptr: PointerType,
     array: ArrayType,
+    func: FunctionType,
 };
 
 // CONSTANT DECLARATION
 pub const Constant = struct {
-    name: []const u8 = "",
     typ: Type = undefined,
     val: Expression = undefined,
     public: bool = false,
@@ -176,7 +176,6 @@ pub const Constant = struct {
 
 // VARIABLE DECLARATION
 pub const Variable = struct {
-    name: []const u8 = "",
     typ: ?Type = null,
     val: ?Expression = null,
     mutable: bool = false,
@@ -204,15 +203,16 @@ pub const Parameter = struct {
 pub const Parameters = std.ArrayList(Parameter);
 
 pub const Function = struct {
+    name: []const u8 = "",
     params: Parameters = undefined,
     typ: Type = undefined,
     body: Block = undefined,
     public: bool = false,
 };
 
-pub const FuncDef = struct {
-    name: []const u8 = "",
-    func: Function,
+pub const FunctionType = struct {
+    params: std.ArrayList(Type) = undefined,
+    typ: Type = undefined,
 };
 
 // FUNCTION CALLS
@@ -226,6 +226,12 @@ pub const BuiltinCall = struct {
     args: std.ArrayList(Expression) = undefined,
 };
 
+// OBJECTS
+pub const ObjectStatement = union(enum) {
+    function: Function,
+    field: Field,
+};
+
 // OBJECTS - FIELDS
 pub const FieldAccess = struct {
     object: *Operand = undefined,
@@ -233,6 +239,7 @@ pub const FieldAccess = struct {
 };
 
 pub const Field = struct {
+    name: []const u8 = "",
     typ: Type = undefined,
     default: ?*Expression = null,
     public: bool = false,
