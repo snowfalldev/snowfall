@@ -1,16 +1,8 @@
 const std = @import("std");
 
-pub fn containsChar(comptime haystack: []const u8, needle: u8) bool {
-    inline for (haystack) |char| if (char == needle) return true;
-    return false;
-}
+// UTILITIES
 
-pub inline fn containsCharRuntime(haystack: []u8, needle: u8) bool {
-    for (haystack) |char| if (char == needle) return true;
-    return false;
-}
-
-pub fn containsString(comptime haystack: [][]const u8, needle: []u8) bool {
+pub fn containsString(comptime haystack: []const []const u8, needle: []const u8) bool {
     inline for (haystack) |string| if (std.mem.eql(u8, string, needle)) return true;
     return false;
 }
@@ -32,7 +24,7 @@ pub inline fn isAlphanumericChar(char: u8) bool {
 }
 
 // Optionally get value from "content" (array of T).
-pub inline fn getOptional(comptime T: type, content: []T, pos: usize) ?T {
+pub inline fn getOptional(comptime T: type, content: []const T, pos: usize) ?T {
     if (content.len < pos + 1) return null;
     return content[pos];
 }

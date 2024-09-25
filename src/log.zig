@@ -10,73 +10,113 @@ pub fn customLogger(
     const prefix = "[" ++ @tagName(scope) ++ "] " ++ comptime level.asText() ++ ": ";
 
     // Print the message to stderr, silently ignoring any errors
-    std.debug.getStderrMutex().lock();
-    defer std.debug.getStderrMutex().unlock();
+    std.debug.lockStdErr();
+    defer std.debug.unlockStdErr();
     const stderr = std.io.getStdErr().writer();
     nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
 }
+
+const Message = struct {
+    msg: []const u8,
+    info: []const u8,
+    data: []const u8,
+
+    pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
+        allocator.free(self.msg);
+        allocator.free(self.info);
+        allocator.free(self.data);
+    }
+};
 
 pub fn Logger(comptime scope: @Type(.EnumLiteral)) type {
     const inner = std.log.scoped(scope);
 
     return struct {
         allocator: std.mem.Allocator,
-        src: ?*const source.Source,
+        src: ?source.Source,
+        errs: std.ArrayList(Message),
+        warns: std.ArrayList(Message),
+        infos: std.ArrayList(Message),
+        debugs: std.ArrayList(Message),
 
         const Self = @This();
 
-        pub fn init(allocator: std.mem.Allocator, src: ?*const source.Source) Self {
+        pub fn init(allocator: std.mem.Allocator, src: ?source.Source) Self {
             return .{
                 .allocator = allocator,
                 .src = src,
+                .errs = std.ArrayList(Message).init(allocator),
+                .warns = std.ArrayList(Message).init(allocator),
+                .infos = std.ArrayList(Message).init(allocator),
+                .debugs = std.ArrayList(Message).init(allocator),
             };
         }
 
-        pub fn err(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) anyerror!void {
-            const str = try std.fmt.allocPrint(self.allocator, fmt, args);
-            inner.err("{s}{s}\n{s}", .{ str, try self.infoString(span), try self.dataString(span) });
+        pub fn deinit(self: Self) void {
+            for (self.errs.items) |m| m.deinit(self.allocator);
+            for (self.warns.items) |m| m.deinit(self.allocator);
+            for (self.infos.items) |m| m.deinit(self.allocator);
+            for (self.debugs.items) |m| m.deinit(self.allocator);
+
+            self.errs.deinit();
+            self.warns.deinit();
+            self.infos.deinit();
+            self.debugs.deinit();
         }
 
-        pub fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) noreturn {
-            _ = self.err(fmt, args, span) catch @panic("OOM on fatal error");
-            std.os.exit(1);
+        inline fn mkMsg(self: Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !Message {
+            return .{
+                .msg = try std.fmt.allocPrint(self.allocator, fmt, args),
+                .info = try self.infoString(span),
+                .data = try self.dataString(span),
+            };
         }
 
-        pub fn warn(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) anyerror!void {
-            const str = try std.fmt.allocPrint(self.allocator, fmt, args);
-            inner.warn("{s}{s}\n{s}", .{ str, try self.infoString(span), try self.dataString(span) });
+        pub fn err(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !void {
+            @setCold(true);
+            const msg = try self.mkMsg(fmt, args, span);
+            try self.errs.append(msg);
+            inner.err("{s}{s}\n{s}", msg);
         }
 
-        pub fn info(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) anyerror!void {
-            const str = try std.fmt.allocPrint(self.allocator, fmt, args);
-            inner.info("{s}{s}\n{s}", .{ str, try self.infoString(span), try self.dataString(span) });
+        pub inline fn warn(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !void {
+            const msg = try self.mkMsg(fmt, args, span);
+            try self.warns.append(msg);
+            inner.warn("{s}{s}\n{s}", msg);
         }
 
-        pub fn debug(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) anyerror!void {
-            const str = try std.fmt.allocPrint(self.allocator, fmt, args);
-            inner.debug("{s}{s}\n{s}", .{ str, try self.infoString(span), try self.dataString(span) });
+        pub inline fn info(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !void {
+            const msg = try self.mkMsg(fmt, args, span);
+            try self.infos.append(msg);
+            inner.info("{s}{s}\n{s}", msg);
         }
 
-        fn infoString(self: *Self, span: ?source.Span) anyerror![]u8 {
-            if (self.src == null and span == null) return &[0]u8{};
+        pub inline fn debug(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !void {
+            const msg = try self.mkMsg(fmt, args, span);
+            try self.debugs.append(msg);
+            inner.debug("{s}{s}\n{s}", msg);
+        }
+
+        fn infoString(self: Self, span: ?source.Span) ![]const u8 {
+            if (self.src == null and span == null) return self.allocator.alloc(u8, 0);
 
             var out = std.ArrayList(u8).init(self.allocator);
+            const writer = out.writer();
             errdefer out.deinit();
 
             var name = false;
             if (self.src) |src| {
                 if (src.name) |nm| {
                     name = true;
-                    try out.appendSlice(" (");
-                    try out.appendSlice(nm);
+                    try writer.print(" ({s}", .{nm});
                 }
             }
 
             if (span) |s| {
                 if (name) {
-                    try out.appendSlice(try std.fmt.allocPrint(self.allocator, ", {}:{})", .{ s[0].row + 1, s[0].col + 1 }));
+                    try writer.print(", {}:{})", .{ s[0].row + 1, s[0].col + 1 });
                 } else {
-                    try out.appendSlice(try std.fmt.allocPrint(self.allocator, " ({}:{})", .{ s[0].row + 1, s[0].col + 1 }));
+                    try writer.print(" ({}:{})", .{ s[0].row + 1, s[0].col + 1 });
                 }
             } else if (name) {
                 try out.append(')');
@@ -85,8 +125,8 @@ pub fn Logger(comptime scope: @Type(.EnumLiteral)) type {
             return out.toOwnedSlice();
         }
 
-        fn dataString(self: *Self, span: ?source.Span) anyerror![]u8 {
-            if (self.src == null or span == null) return &[0]u8{};
+        fn dataString(self: Self, span: ?source.Span) ![]const u8 {
+            if (self.src == null or span == null) return self.allocator.alloc(u8, 0);
             const s = span.?;
             const d = self.src.?.data;
 

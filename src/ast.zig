@@ -8,7 +8,7 @@ const Token = lexer.Token;
 pub const BlockStatement = union(enum) {
     call: Call,
     builtin_call: BuiltinCall,
-    function: FuncDef,
+    function: Function,
     constant: Constant,
     variable: Variable,
     assignment: Assignment,
@@ -75,11 +75,10 @@ pub const Operator = enum {
 
 // EXPRESSIONS
 pub const LiteralOperand = union(enum) {
-    false,
-    true,
     null,
     undefined,
-    char: u8,
+    bool: bool,
+    char: u21,
     string: []const u8,
     uint: u128,
     int: i128,
@@ -89,13 +88,9 @@ pub const LiteralOperand = union(enum) {
 
     pub inline fn fromToken(token: Token) ?Self {
         return switch (token) {
-            Token.value => |value| {
-                if (std.mem.eql(u8, value, "false")) return Self.false;
-                if (std.mem.eql(u8, value, "true")) return Self.true;
-                if (std.mem.eql(u8, value, "null")) return Self.null;
-                if (std.mem.eql(u8, value, "undefined")) return Self.undefined;
-                unreachable;
-            },
+            Token.bool => |b| .{ .bool = b },
+            Token.null => Self.null,
+            Token.undefined => Self.undefined,
             Token.char => |char| .{ .char = char },
             Token.string => |string| .{ .string = string },
             Token.uint => |uint| .{ .uint = uint },
@@ -137,16 +132,18 @@ pub const Operand = union(enum) {
     }
 };
 
-// EXPRESSION CHAINS
-pub const ExpressionItem = union(enum) {
-    operand: Operand,
-    expression: Expression,
-    comparator: Comparator,
-    boolean_operator: BooleanOperator,
-    operator: Operator,
+// EXPRESSIONS
+
+pub const Expression = union(enum) {
+    operation: *Operation,
+    operand: *Operand,
 };
 
-pub const Expression = std.ArrayList(ExpressionItem);
+pub const Operation = struct {
+    operandl: Expression,
+    operator: Operator,
+    operandr: Expression,
+};
 
 // TYPES
 pub const PointerType = struct {

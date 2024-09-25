@@ -7,33 +7,33 @@ pub fn build(b: *std.Build) anyerror!void {
 
     // DEPENDENCIES
 
-    //const unicode = b.dependency("unicode", .{});
-    //const unicode_mod = unicode.module("unicode");
+    const utftools = b.dependency("utftools", .{});
+    const utftools_mod = utftools.module("utftools");
 
     // LIBRARY
 
     const lib = b.addStaticLibrary(.{
         .name = "tungsten",
-        .root_source_file = std.Build.LazyPath.relative("src/lib.zig"),
+        .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
         .version = try std.SemanticVersion.parse("0.0.1"),
     });
 
-    //lib.root_module.addImport("unicode", unicode_mod);
+    lib.root_module.addImport("utftools", utftools_mod);
     b.installArtifact(lib);
 
     // RUNTIME
 
     const exe = b.addExecutable(.{
         .name = "tungsten",
-        .root_source_file = std.Build.LazyPath.relative("src/main.zig"),
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .version = try std.SemanticVersion.parse("0.0.1"),
     });
 
-    //exe.root_module.addImport("unicode", unicode_mod);
+    exe.root_module.addImport("utftools", utftools_mod);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -45,11 +45,12 @@ pub fn build(b: *std.Build) anyerror!void {
 
     const tests = b.addTest(.{
         .name = "test",
-        .root_source_file = std.Build.LazyPath.relative("src/lib.zig"),
+        .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
     });
 
+    tests.root_module.addImport("utftools", utftools_mod);
     const tests_step = b.step("test", "Run all tests");
     tests_step.dependOn(&b.addRunArtifact(tests).step);
 }

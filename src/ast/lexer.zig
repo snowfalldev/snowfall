@@ -1,27 +1,25 @@
 const std = @import("std");
 const log = @import("../log.zig");
+const util = @import("util.zig");
 const source = @import("source.zig");
-const common = @import("../common.zig");
+const utftools = @import("utftools");
 
 const Allocator = std.mem.Allocator;
 
 const Logger = @import("../log.zig").Logger;
+const value = @import("../vm/value.zig");
+const NumberType = value.BuiltinValue.NumberType;
+const Number = value.BuiltinValue.Number;
 
 const allocPrint = std.fmt.allocPrint;
-const minInt = std.math.minInt;
-const maxInt = std.math.maxInt;
-const floatMin = std.math.floatMin;
-const floatMax = std.math.floatMax;
 const parseUnsigned = std.fmt.parseUnsigned;
 const parseInt = std.fmt.parseInt;
 const parseFloat = std.fmt.parseFloat;
 
-const getOptional = common.getOptional;
-const isNumberChar = common.isNumberChar;
-const isHexadecimalChar = common.isHexadecimalChar;
-const containsChar = common.containsChar;
-const containsCharRuntime = common.containsCharRuntime;
-const containsString = common.containsString;
+const getOptional = util.getOptional;
+const isNumberChar = util.isNumberChar;
+const isHexadecimalChar = util.isHexadecimalChar;
+const containsString = util.containsString;
 
 const Position = source.Position;
 const Span = source.Span;
@@ -31,33 +29,34 @@ pub const Token = union(enum) {
     // values
     null,
     undefined,
-    boolean: bool,
-    char: u8,
-    string: []u8,
-    uint: u128,
-    int: i128,
-    float: f128,
+    bool: bool,
+    char: u21,
+    string: []const u8,
+    number: Number,
 
     // other
     symbol: u8,
-    identifier: []u8,
-    keyword: []u8,
+    keyword: []const u8,
+    builtin_type: []const u8,
+    identifier: []const u8,
 
     const Self = @This();
 
     // Convert from a string representing a basic token (if possible).
-    pub fn fromBasicString(string: []u8) ?Self {
+    pub fn fromBasicString(string: []const u8) ?Self {
         if (std.mem.eql(u8, string, "null")) {
             return Self.null;
         } else if (std.mem.eql(u8, string, "undefined")) {
             return Self.undefined;
         } else if (std.mem.eql(u8, string, "true")) {
-            return .{ .boolean = true };
+            return .{ .bool = true };
         } else if (std.mem.eql(u8, string, "false")) {
-            return .{ .boolean = false };
+            return .{ .bool = false };
         } else if (isIdentifier(string)) {
-            if (containsString(@constCast(&keywords), string)) {
+            if (containsString(&keywords, string)) {
                 return .{ .keyword = string };
+            } else if (value.BuiltinType.string_map.has(string)) {
+                return .{ .builtin_type = string };
             } else {
                 return .{ .identifier = string };
             }
@@ -66,28 +65,61 @@ pub const Token = union(enum) {
         return null;
     }
 
-    // Convert a token to string representation.
-    pub fn toString(self: Self, allocator: Allocator) ![]u8 {
+    // Write a token to a writer.
+    pub fn write(self: Self, writer: anytype) !void {
         return switch (self) {
-            Token.null => try allocPrint(allocator, "null", .{}),
-            Token.undefined => try allocPrint(allocator, "undefined", .{}),
-            Token.boolean => |v| try allocPrint(allocator, "boolean: {}", .{v}),
-            Token.char => |v| try allocPrint(allocator, "char: {}", .{v}),
-            Token.string => |v| try allocPrint(allocator, "string: \"{s}\"", .{v}),
-            Token.uint => |v| try allocPrint(allocator, "uint: {}", .{v}),
-            Token.int => |v| try allocPrint(allocator, "int: {}", .{v}),
-            Token.float => |v| try allocPrint(allocator, "int: {}", .{v}),
+            .null => try writer.print("null", .{}),
+            .undefined => try writer.print("undefined", .{}),
+            .bool => |v| try writer.print("bool: {}", .{v}),
+            .char => |v| {
+                try writer.writeAll("char: '");
+                try utftools.writeCodepointToUtf8(v, writer);
+                try writer.writeByte('\'');
+            },
+            .string => |v| try writer.print("string: \"{s}\"", .{v}),
+            .number => |v| {
+                try writer.writeAll("number: { ");
+                v.write(writer);
+                try writer.writeAll(" }");
+            },
 
-            Token.symbol => |v| try allocPrint(allocator, "symbol: {c}", .{v}),
-            Token.identifier => |v| try allocPrint(allocator, "identifier: {s}", .{v}),
-            Token.keyword => |v| try allocPrint(allocator, "keyword: {s}", .{v}),
+            .symbol => |v| try writer.print("symbol: {c}", .{v}),
+            .identifier => |v| try writer.print("identifier: {s}", .{v}),
+            .builtin_type => |v| try writer.print("built-in type: {s}", .{v}),
+            .keyword => |v| try writer.print("keyword: {s}", .{v}),
+        };
+    }
+
+    // Convert a token to string representation.
+    pub fn toString(self: Self, allocator: Allocator) ![]const u8 {
+        return switch (self) {
+            .null => try allocPrint(allocator, "null", .{}),
+            .undefined => try allocPrint(allocator, "undefined", .{}),
+            .bool => |v| try allocPrint(allocator, "bool: {}", .{v}),
+            .char => |v| {
+                const arr = [1]u21{v};
+                const c = try utftools.codepointsToUtf8Alloc(allocator, &arr);
+                defer allocator.free(c);
+                return try allocPrint(allocator, "char: '{s}'", .{c});
+            },
+            .string => |v| try allocPrint(allocator, "string: \"{s}\"", .{v}),
+            .number => |v| {
+                const s = try v.toString(allocator);
+                defer allocator.free(s);
+                return try allocPrint(allocator, "number: {{ {s} }}", .{s});
+            },
+
+            .symbol => |v| try allocPrint(allocator, "symbol: {c}", .{v}),
+            .identifier => |v| try allocPrint(allocator, "identifier: {s}", .{v}),
+            .builtin_type => |v| try allocPrint(allocator, "built-in type: {s}", .{v}),
+            .keyword => |v| try allocPrint(allocator, "keyword: {s}", .{v}),
         };
     }
 
     // Is the token the end of an expression or an expression itself?
     pub fn isExpression(self: Self) bool {
         return switch (self) {
-            Token.symbol => |symbol| switch (symbol) {
+            .symbol => |symbol| switch (symbol) {
                 ')' => true, // End of function call or expression in parenthesis.
                 else => false,
             },
@@ -105,168 +137,101 @@ pub const LocatedToken = struct {
 pub const Tokens = std.ArrayList(LocatedToken);
 
 // Non-decimal representation characters in numbers.
-pub const non_dec_number_chars = [_]u8{
-    'x', 'X', // hexadecimal
-    'b', 'B', // binary
-    'O', 'O', // octal
-    'e', 'E', // exponent
-};
+inline fn isNonDecNumberChar(char: u8) bool {
+    return switch (char) {
+        'x',
+        'X', // hexadecimal
+        'b',
+        'B', // binary
+        'o',
+        'O', // octal
+        'e',
+        'E', // exponent
+        => true,
+        else => false,
+    };
+}
 
 // All valid separating symbols.
-pub const separating_symbols = [_]u8{
-    '&', // logical/bitwise and
-    '|', // logical/bitwise or
-    '!', // logical not
-    '~', // bitwise not
-    '^', // bitwise xor
-    '<', // less than comparison operator / left shift
-    '>', // greater than comparison operator / right shift
-    '*', // reference / multiplication operator / comment
-    '/', // division operator / comment
-    '{', // open block / array
-    '(', // open tuple / arguments
-    '[', // open array slicer
-    '}', // close block / array
-    ')', // close tuple / arguments
-    ']', // close array slicer
-    ':', // explicit types / ternary selection
-    ',', // separate arguments and array items
-    '=', // set & equals comparison operator
-    '%', // modulus operator
-    '+', // addition operator
-    '-', // subtraction operator
-    '?', // ternary operator
-    '@', // builtins / annotations
-    ';', // statement separator
-};
+inline fn isSeparatingSymbol(char: u8) bool {
+    return switch (char) {
+        '&', // logical/bitwise and
+        '|', // logical/bitwise or
+        '!', // logical not
+        '~', // bitwise not
+        '^', // bitwise xor
+        '<', // less than comparison operator / left shift
+        '>', // greater than comparison operator / right shift
+        '*', // reference / multiplication operator / comment
+        '/', // division operator / comment
+        '{', // open block / array
+        '(', // open tuple / arguments
+        '[', // open array slicer
+        '}', // close block / array
+        ')', // close tuple / arguments
+        ']', // close array slicer
+        ':', // explicit types / ternary selection
+        ',', // separate arguments and array items
+        '=', // set & equals comparison operator
+        '%', // modulus operator
+        '+', // addition operator
+        '-', // subtraction operator
+        '?', // ternary operator
+        '@', // builtins / annotations
+        ';', // statement separator
+        => true,
+        else => false,
+    };
+}
 
 // All valid symbols.
-pub const symbols = separating_symbols ++ [_]u8{
-    '.', // field access
-};
+inline fn isSymbol(char: u8) bool {
+    return char == '.' or isSeparatingSymbol(char);
+}
 
-// All valid keywords.
-pub const keywords = [_][]const u8{
-    "as", // casting
-    "error", // define error
-    "throws", // function throws error
-    "raise", // raise error
-    "try", // try error returning block
-    "catch", // catch error from try block
-    "if", // define conditional if statement
-    "else", // define conditional else statement
-    "switch", // define switch statement
-    "pub", // publicize declaration
-    "const", // declare constant value
-    "var", // declare variable
-    "fn", // define function
-    "return", // return from function
-    "section", // define section
-    "goto", // go to section
-    "struct", // define struct
-    "enum", // define enum
-    "union", // define union
-    "interface", // define interface
-    "loop", // define infinite loop
-    "while", // define while loop
-    "for", // define for loop
-    "in", // in selector
-    "range", // produce range
-    "break", // loop break
-    "continue", // loop continue
-};
-
-// Check if "content" (array of bytes) is a valid identifier.
-pub inline fn isIdentifier(content: []u8) bool {
+// Check if "content" (string with no spaces) is a valid identifier.
+inline fn isIdentifier(content: []const u8) bool {
     return content.len > 0 and !isNumberChar(content[0]);
 }
 
-// Number types.
-// *size types are platform based.
-pub const number_types = [_][]const u8{
-    "usize", // unsigned platform-based integer
-    "u128", // unsigned 128-bit integer
-    "u64", // unsigned 64-bit integer
-    "u32", // unsigned 32-bit integer
-    "u16", // unsigned 16-bit integer
-    "u8", // unsigned 8-bit integer
-    "isize", // signed platform-based integer
-    "i128", // signed 128-bit integer
-    "i64", // signed 64-bit integer
-    "i32", // signed 32-bit integer
-    "i16", // signed 16-bit integer
-    "i8", // signed 8-bit integer
-    "f128", // 128-bit float
-    "f64", // 64-bit float
-    "f32", // 32-bit float
-    "f16", // 16-bit float
+// zig fmt: off
+
+// All valid keywords.
+pub const keywords = [_][]const u8{
+    "as",    // casting
+    "throw", // raise error
+    "try",   // try function which raises errors
+    "catch", // catch error
+    
+    "if",     // define conditional if statement
+    "else",   // define conditional else statement
+    "switch", // define switch statement
+    
+    "pub",   // publicize declaration
+    "const", // declare constant variable
+    "var",   // declare mutable variable
+    
+    "func",   // define function
+    "return", // return from function
+    "ref",    // get reference to param instead of copying
+    
+    "struct",    // define struct
+    "enum",      // define enum
+    "union",     // define union
+    "interface", // define interface
+    
+    "loop",     // define infinite loop
+    "while",    // define while loop
+    "for",      // define for loop
+    "break",    // loop break
+    "continue", // loop continue
+    
+    "use", // import a library
 };
 
-// Maximum values for uint types.
-pub const uint_max = std.ComptimeStringMap(u128, .{
-    .{ "usize", maxInt(usize) },
-    .{ "u128", maxInt(u128) },
-    .{ "u64", maxInt(u64) },
-    .{ "u32", maxInt(u32) },
-    .{ "u16", maxInt(u16) },
-    .{ "u8", maxInt(u8) },
-});
+// zig fmt: on
 
-// Minimum values for int types.
-pub const int_min = std.ComptimeStringMap(i128, .{
-    .{ "isize", minInt(isize) },
-    .{ "i128", minInt(i128) },
-    .{ "i64", minInt(i64) },
-    .{ "i32", minInt(i32) },
-    .{ "i16", minInt(i16) },
-    .{ "i8", minInt(i8) },
-});
-
-// Maximum values for int types.
-pub const int_max = std.ComptimeStringMap(i128, .{
-    .{ "isize", maxInt(isize) },
-    .{ "i128", maxInt(i128) },
-    .{ "i64", maxInt(i64) },
-    .{ "i32", maxInt(i32) },
-    .{ "i16", maxInt(i16) },
-    .{ "i8", maxInt(i8) },
-});
-
-// Minimum values for float types.
-pub const float_min = std.ComptimeStringMap(f128, .{
-    .{ "f128", floatMin(f128) },
-    .{ "f64", floatMin(f64) },
-    .{ "f32", floatMin(f32) },
-    .{ "f16", floatMin(f16) },
-});
-
-// Maximum values for float types.
-pub const float_max = std.ComptimeStringMap(f128, .{
-    .{ "f128", floatMax(f128) },
-    .{ "f64", floatMax(f64) },
-    .{ "f32", floatMax(f32) },
-    .{ "f16", floatMax(f16) },
-});
-
-pub const NumberState = enum {
-    uint,
-    int,
-    float,
-};
-
-pub const builtin_types = number_types ++ [_][]const u8{
-    "type",
-    "bool",
-    "void",
-    "any",
-};
-
-pub const State = enum {
-    string,
-    char,
-    number,
-    none,
-};
+pub const State = enum { string, char, number, none };
 
 pub const Lexer = struct {
     allocator: Allocator,
@@ -275,13 +240,16 @@ pub const Lexer = struct {
 
     src: source.Source,
     pos: Position = .{},
-    token_start: Position = .{}, // Stores the starting position of the next token. Only used for some tokens.
+    last: Position = .{},
+    start: Position = .{},
 
-    chars: struct { u8, u8 }, // Stores the current and next characters.
+    chars: [2]u8,
+    basic: []const u8 = "",
     buffer: std.ArrayList(u8),
     state: State = State.none,
 
     logger: Logger(.lexer),
+    failed: bool = false,
 
     const Self = @This();
 
@@ -292,11 +260,11 @@ pub const Lexer = struct {
             .output = Tokens.init(allocator),
             .src = src,
             .chars = .{
-                getOptional(u8, @constCast(src.data), 0) orelse 0,
-                getOptional(u8, @constCast(src.data), 1) orelse 0,
+                getOptional(u8, src.data, 0) orelse 0,
+                getOptional(u8, src.data, 1) orelse 0,
             },
             .buffer = std.ArrayList(u8).init(allocator),
-            .logger = Logger(.lexer).init(allocator, &src),
+            .logger = Logger(.lexer).init(allocator, src),
         };
     }
 
@@ -305,37 +273,31 @@ pub const Lexer = struct {
     pub fn deinit(self: *Self) void {
         self.output.deinit();
         self.buffer.deinit();
+        self.logger.deinit();
     }
 
-    // Clears the lexer retaining capacity, making it available to parse again.
-    pub fn clearRetainingCapacity(self: *Self) void {
-        self.output.clearRetainingCapacity();
-        self.chars = .{
-            getOptional(u8, @constCast(self.src.data), 0) orelse 0,
-            getOptional(u8, @constCast(self.src.data), 1) orelse 0,
-        };
-        self.pos = .{ .raw = 0, .row = 0, .col = 0 };
-        self.buffer.clearRetainingCapacity();
-        self.state = State.none;
-        self.token_start = .{ .raw = 0, .row = 0, .col = 0 };
-    }
+    // Clears the lexer, making it available to parse again.
+    pub fn clear(self: *Self, free: bool) void {
+        if (free) {
+            self.output.clearAndFree();
+            self.buffer.clearAndFree();
+        } else {
+            self.output.clearRetainingCapacity();
+            self.buffer.clearRetainingCapacity();
+        }
 
-    // Clears the lexer and frees, making it available to parse again.
-    pub fn clearAndFree(self: *Self) void {
-        self.output.clearAndFree();
+        self.state = State.none;
         self.chars = .{
-            getOptional(u8, @constCast(self.src.data), 0) orelse 0,
-            getOptional(u8, @constCast(self.src.data), 1) orelse 0,
+            getOptional(u8, self.src.data, 0) orelse 0,
+            getOptional(u8, self.src.data, 1) orelse 0,
         };
         self.pos = .{ .raw = 0, .row = 0, .col = 0 };
-        self.buffer.clearAndFree();
-        self.state = State.none;
-        self.token_start = .{ .raw = 0, .row = 0, .col = 0 };
+        self.start = .{ .raw = 0, .row = 0, .col = 0 };
     }
 
     // Lexes the entire queue.
     pub fn lexFull(self: *Self) !Tokens {
-        while (self.pos.raw < self.src.data.len) try self.lexNext();
+        while (self.pos.raw < self.src.data.len and !self.failed) try self.lexNext();
         return self.output;
     }
 
@@ -345,39 +307,22 @@ pub const Lexer = struct {
         return self.output.items[self.output.items.len - 1];
     }
 
-    // Get a character in the queue relative to the current position.
-    pub inline fn getCharRelative(self: *Self, offset: isize) u8 {
-        return getOptional(u8, @constCast(self.src.data), self.pos.raw + offset) orelse 0;
-    }
-
-    // Start a new token.
-    pub inline fn startToken(self: *Self) void {
-        self.token_start = self.pos;
-    }
-
-    // Get the starting position of the current token.
-    pub inline fn getTokenStart(self: *Self) Position {
-        return if (self.state != State.none) self.token_start else self.pos.back(self.buffer.items.len);
-    }
-
-    // Adds the basic token from the current buffer to the output.
+    // Adds the current basic token to the output.
     pub fn addBasicToken(self: *Self) !void {
-        if (self.buffer.items.len == 0) return;
+        if (self.basic.len == 0) return;
+        self.basic.ptr = @ptrCast(&self.src.data[self.start.raw]);
 
-        const content = (try self.buffer.clone()).items;
-
-        if (Token.fromBasicString(content)) |token| {
-            const start = self.getTokenStart();
-            const end = self.pos.back(1);
-            try self.output.append(.{ .span = .{ start, end }, .token = token });
+        if (Token.fromBasicString(self.basic)) |token| {
+            try self.output.append(.{ .span = .{ self.start, self.last }, .token = token });
         }
 
-        self.buffer.clearRetainingCapacity();
+        self.basic.len = 0;
     }
 
     // Moves the lexer position, and sets the current and next characters.
     // Skips newline characters.
     pub fn advance(self: *Self) !void {
+        self.last = self.pos;
         self.pos.raw += 1;
         self.pos.col += 1;
 
@@ -396,242 +341,197 @@ pub const Lexer = struct {
         }
 
         self.chars = .{
-            self.getCharRelative(0),
-            self.getCharRelative(1),
+            getOptional(u8, self.src.data, self.pos.raw) orelse 0,
+            getOptional(u8, self.src.data, self.pos.raw + 1) orelse 0,
         };
     }
 
     // Lex string and character escape sequences.
-    pub fn lexEscapeSequences(self: *Self, comptime exit: u8) !void {
+    pub fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
         try self.advance();
+        const esc_seq_start = self.pos;
 
-        switch (self.chars[1]) {
-            'n' => try self.buffer.append('\n'),
-            'r' => try self.buffer.append('\r'),
-            't' => try self.buffer.append('\t'),
-            '\\' => try self.buffer.append('\\'),
-            exit => try self.buffer.append(exit),
+        return switch (self.chars[1]) {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '\\' => '\\',
+            exit => exit,
             'x' => {
                 if (self.src.data.len > self.pos.raw + 3) {
                     try self.advance(); // Advance past '\'.
                     try self.advance(); // Advance past 'x'.
+                    const chars = self.chars;
+                    try self.advance();
 
-                    try self.buffer.append(parseUnsigned(u8, &self.chars, 16) catch ret: {
-                        try self.logger.err("bad hexadecimal number.", .{}, .{ self.pos, self.pos }); // Overflow is unreachable.
-                        break :ret 0;
-                    });
+                    return parseUnsigned(u21, &chars, 16) catch {
+                        try self.logger.err("bad hexadecimal number.", .{}, .{ esc_seq_start, self.pos }); // Overflow is unreachable.
+                        return 0xFFFD;
+                    };
                 } else {
                     try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos });
-                    try self.buffer.append(0);
+                    return 0xFFFD;
                 }
             },
             'u' => {
-                if (exit == '\'') {
-                    const esc_seq_start = self.pos;
-                    while (self.pos.raw < self.src.data.len and self.chars[1] != '}') {
-                        try self.advance();
-                    }
-                    try self.logger.err("UTF-8 multi-character escape sequence used inside a character.", .{}, .{ esc_seq_start, self.pos });
-                    try self.logger.err("single characters can be escaped with the '\\x__' format.", .{}, null);
-                    try self.buffer.append(0);
-                    return;
-                }
-
                 try self.advance(); // Advance past '\'.
                 try self.advance(); // Advance past 'u'.
 
-                if (self.chars[0] == '{') {
-                    try self.advance();
+                if (self.chars[0] == '{') parse: {
+                    try self.advance(); // Advance past '{'.
 
-                    var second = false;
-                    var tmp = try std.ArrayList(u8).initCapacity(self.allocator, 2);
-                    var hex = std.ArrayList(u8).init(self.allocator);
-                    defer tmp.deinit();
-                    defer hex.deinit();
+                    const esc_char_start = self.pos;
+                    var idx: usize = 5;
 
                     while (self.pos.raw < self.src.data.len) : (try self.advance()) {
-                        if (!isHexadecimalChar(self.chars[0])) {
-                            try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos });
-                            try self.buffer.append(0);
-                            return;
-                        }
-
-                        tmp.appendAssumeCapacity(self.chars[0]);
-
-                        if (second or !isHexadecimalChar(self.chars[1])) {
-                            try hex.append(try parseInt(u8, tmp.items, 16)); // Don't catch; next if statement ensures this will work.
-                            tmp.clearRetainingCapacity();
-                        }
-
-                        if (self.chars[1] == '}') break;
-
-                        second = !second;
+                        if (!isHexadecimalChar(self.chars[0]) or self.chars[1] == '\n') break :parse;
+                        if (self.chars[1] == '}' or idx == 0) break;
+                        idx -%= 1;
                     }
 
-                    try self.buffer.appendSlice(try hex.toOwnedSlice());
-                } else {
-                    _ = self.src.data[self.pos.raw .. self.pos.raw + 4];
+                    try self.advance();
+
+                    const char = try parseUnsigned(u21, self.src.data[esc_char_start.raw..self.pos.raw], 16);
+                    if (char > 0x10FFFF) try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, self.pos });
+                    return char;
                 }
+
+                while (self.pos.raw < self.src.data.len and isHexadecimalChar(self.chars[1])) try self.advance();
+                try self.advance();
+                try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, self.pos });
+                return 0xFFFD;
             },
             else => {
                 try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos });
-                try self.buffer.append(0);
+                return 0xFFFD;
             },
-        }
+        };
+    }
+
+    inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span) !void {
+        try self.logger.err(fmt, args, span);
+        self.failed = true;
     }
 
     // Lex characters into the next token(s).
     pub fn lexNext(self: *Self) !void {
-        if (self.pos.raw >= self.src.data.len) return;
+        if (self.pos.raw >= self.src.data.len or self.failed) return;
 
         const initial_len = self.output.items.len;
 
         while (self.pos.raw < self.src.data.len and initial_len == self.output.items.len) : (try self.advance()) {
+            if (self.basic.len == 0) self.start = self.pos;
             var explicit_sign_number = (self.chars[0] == '+' or self.chars[0] == '-') and isNumberChar(self.chars[1]);
 
             // Explicitly +/- numbers; we must ensure the last token was not an expression.
             if (explicit_sign_number) {
                 var last_token = self.getLastToken();
-                if (last_token == null) try self.logger.fatal("invalid syntax.", .{}, .{ self.pos, self.pos });
+                if (last_token == null) return self.fatal("invalid syntax.", .{}, .{ self.pos, self.pos });
                 explicit_sign_number = explicit_sign_number and !last_token.?.token.isExpression();
             }
 
             // Number lexer.
-            if (!isIdentifier(self.buffer.items) and (isNumberChar(self.chars[0]) or explicit_sign_number)) {
-                self.startToken();
+            if (!isIdentifier(self.basic) and (isNumberChar(self.chars[0]) or explicit_sign_number)) {
+                var number_span = Span{ self.pos, self.pos };
                 self.state = State.number;
 
-                const basic = !(self.chars[0] == '0' and containsChar(&non_dec_number_chars, self.chars[1]));
-                var number_state = NumberState.uint;
+                const decimal = !(self.chars[0] == '0' and isNonDecNumberChar(self.chars[1]));
+                var number_state = NumberType.u64;
                 var explicit_type_char: ?u8 = null;
 
                 if (explicit_sign_number) {
-                    number_state = NumberState.int;
-                    try self.buffer.append(self.chars[0]);
+                    number_state = NumberType.i64;
                     try self.advance();
                 }
 
                 while (self.pos.raw < self.src.data.len) : (try self.advance()) {
-                    if (isNumberChar(self.chars[0]) or self.chars[0] == '_' or (isHexadecimalChar(self.chars[0]) and !basic)) {
-                        try self.buffer.append(self.chars[0]);
-                    } else if (self.chars[0] == '.') {
-                        if (!basic) try self.logger.fatal("invalid number format.", .{}, .{ self.pos, self.pos });
-                        if (number_state == NumberState.float) break;
-                        number_state = NumberState.float;
-                        try self.buffer.append(self.chars[0]);
-                    } else if (containsChar(@constCast(&symbols), self.chars[0])) {
-                        break;
-                    } else if (self.chars[1] == '\n') {
-                        try self.buffer.append(self.chars[0]);
-                        try self.advance();
-                        break;
-                    } else if ((self.chars[0] == 'u' or self.chars[0] == 'i' or self.chars[0] == 'f') and basic) {
+                    number_span[1] = self.pos;
+                    // TODO: use labeled switch
+                    if (false) switch (self.chars[0]) {
+                        '0'...'9', '_' => {},
+                        'a'...'f', 'A'...'F' => if (decimal) return self.fatal("invalid number format.", .{}, number_span),
+                        '.' => {
+                            if (!decimal) return self.fatal("invalid number format.", .{}, number_span);
+                            if (number_state == NumberType.f64) break;
+                            number_state = NumberType.f64;
+                        },
+                        'u', 'i', 'f' => if (decimal) {
+                            explicit_type_char = self.chars[0];
+                            break;
+                        } else return self.fatal("invalid number format.", .{}, number_span),
+                        else => return self.fatal("invalid number format.", .{}, number_span),
+                    };
+
+                    if (isNumberChar(self.chars[0]) or self.chars[0] == '_' or // don't use isHexadecimalChar cause we already checked isNumberChar
+                        (!decimal and ((self.chars[0] >= 'a' and self.chars[0] <= 'f') or (self.chars[0] >= 'A' and self.chars[0] <= 'F'))))
+                    {} else if (self.chars[0] == '.') {
+                        if (!decimal) return self.fatal("invalid number format.", .{}, .{ self.pos, self.pos });
+                        if (number_state == NumberType.f64) break;
+                        number_state = NumberType.f64;
+                    } else if ((self.chars[0] == 'u' or self.chars[0] == 'i' or self.chars[0] == 'f') and decimal) {
                         explicit_type_char = self.chars[0];
                         break;
-                    } else {
-                        try self.logger.fatal("invalid number format.", .{}, .{ self.pos, self.pos });
+                    } else return self.fatal("invalid number format.", .{}, .{ self.pos, self.pos });
+
+                    if (isSeparatingSymbol(self.chars[1]) or self.chars[1] == '\n') {
+                        try self.advance();
+                        break;
                     }
                 }
 
-                const number_data = (try self.buffer.clone()).items;
-                const number_start = self.getTokenStart();
-                const number_span = Span{ number_start, number_start.forward(number_data.len - 1) };
+                const number_data = self.src.data[number_span[0].raw..self.pos.raw];
 
-                self.startToken();
-                self.buffer.clearRetainingCapacity();
+                var explicit_type_span = Span{ self.pos, self.pos };
+                var type_string: []const u8 = @tagName(number_state);
 
-                var type_string: []u8 = switch (number_state) {
-                    NumberState.uint => @constCast("usize"),
-                    NumberState.int => @constCast("isize"),
-                    NumberState.float => @constCast("f32"),
-                };
+                var err = false;
+                if (explicit_type_char) |char| get_type: {
+                    while (self.pos.raw < self.src.data.len) {
+                        if (isSymbol(self.chars[0]) or self.chars[0] == ' ') break;
+                        explicit_type_span[1] = self.pos;
+                        try self.advance();
+                    }
 
-                if (explicit_type_char) |char| {
-                    while (self.pos.raw < self.src.data.len) : (try self.advance()) {
-                        if (isNumberChar(self.chars[0]) or
-                            self.chars[0] == 'u' or
-                            self.chars[0] == 'f' or
-                            self.chars[0] == 's' or
-                            self.chars[0] == 'i' or
-                            self.chars[0] == 'z' or
-                            self.chars[0] == 'e')
-                        {
-                            try self.buffer.append(self.chars[0]);
-                        } else {
-                            type_string = (try self.buffer.clone()).items;
-                            self.buffer.clearRetainingCapacity();
-                            break;
-                        }
+                    type_string = self.src.data[explicit_type_span[0].raw..self.pos.raw];
+                    const new_state = NumberType.string_map.get(type_string);
+                    if (new_state == null) {
+                        try self.logger.err("unknown type.", .{}, explicit_type_span);
+                        err = true;
+                        break :get_type;
                     }
 
                     if (char == 'u') {
-                        if (number_state == NumberState.int) {
-                            try self.logger.err("Unsigned integers cannot be negative.", .{}, .{ self.getTokenStart(), self.pos.back(1) });
-                        } else if (number_state == NumberState.float) {
-                            try self.logger.err("Floats cannot become unsigned integers.", .{}, .{ self.getTokenStart(), self.pos.back(1) });
+                        if (number_state == NumberType.i64 and number_data[0] == '-') {
+                            try self.logger.err("unsigned integers cannot be negative.", .{}, explicit_type_span);
+                            err = true;
+                        } else if (number_state == NumberType.f64) {
+                            try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, explicit_type_span);
+                            err = true;
                         }
-                    } else if (char == 'i' and number_state == NumberState.float) {
-                        try self.logger.err("Floats cannot become signed integers.", .{}, .{ self.getTokenStart(), self.pos.back(1) });
-                    } else if (char == 'f') {
-                        number_state = NumberState.float;
+                    } else if (char == 'i' and number_state == NumberType.f64) {
+                        try self.logger.err("floating-point numbers cannot become signed integers.", .{}, explicit_type_span);
+                        err = true;
                     }
 
-                    if (!containsString(@constCast(&number_types), type_string)) {
-                        try self.logger.fatal("Unknown type.", .{}, .{ self.getTokenStart(), self.pos.back(1) });
-                    }
+                    number_state = new_state.?;
+                    number_span[1] = explicit_type_span[1];
                 }
-
-                const number: Token = switch (number_state) {
-                    NumberState.uint => uint: {
-                        const max = uint_max.get(type_string).?;
-
-                        if (parseUnsigned(u128, number_data, 0)) |number_value| {
-                            if (number_value > max) try self.logger.err("number cannot fit in type {s}.", .{type_string}, number_span);
-                            break :uint .{ .uint = number_value };
-                        } else |_| { // InvalidCharacter unreachable.
-                            try self.logger.err("number cannot fit in type {s}.", .{type_string}, number_span);
-                        }
-                    },
-                    NumberState.int => int: {
-                        const min = int_min.get(type_string).?;
-                        const max = int_max.get(type_string).?;
-
-                        if (parseInt(i128, number_data, 0)) |number_value| {
-                            if (number_value < min or number_value > max) try self.logger.err("number cannot fit in type {s}.", .{type_string}, number_span);
-                            break :int .{ .int = number_value };
-                        } else |_| { // InvalidCharacter unreachable.
-                            try self.logger.err("number cannot fit in type {s}.", .{type_string}, number_span);
-                        }
-                    },
-                    NumberState.float => float: {
-                        const min = float_min.get(type_string).?;
-                        const max = float_max.get(type_string).?;
-
-                        if (parseFloat(f128, number_data)) |number_value| {
-                            if (number_value < min or number_value > max) try self.logger.err("number cannot fit in type {s}.", .{type_string}, number_span);
-                            break :float .{ .float = number_value };
-                        } else |_| unreachable;
-                    },
-                };
 
                 try self.output.append(.{
                     .span = number_span,
-                    .token = number,
-                });
-
-                if (explicit_type_char != null) try self.output.append(.{
-                    .span = .{ self.getTokenStart(), self.pos.back(1) },
-                    .token = Token{ .identifier = type_string },
+                    .token = .{ .number = Number.parse(number_state, number_data, 0) catch num: {
+                        try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span);
+                        break :num Number{ .u64 = 0 };
+                    } },
                 });
 
                 self.state = State.none;
-                self.buffer.clearRetainingCapacity();
                 return;
             }
 
             switch (self.chars[0]) {
                 '"' => { // String lexer.
-                    self.startToken();
+                    self.start = self.pos;
                     self.state = State.string;
 
                     while (self.pos.raw < self.src.data.len) : (try self.advance()) {
@@ -639,63 +539,61 @@ pub const Lexer = struct {
                             try self.advance();
                             break;
                         } else if (self.chars[1] == '\\') {
-                            try self.lexEscapeSequences('"');
-                        } else {
-                            try self.buffer.append(self.chars[1]);
-                        }
+                            const char = try self.parseEscapeSequence('"');
+                            try utftools.writeCodepointToUtf8(char, self.buffer.writer());
+                        } else try self.buffer.append(self.chars[1]);
                     }
 
                     try self.output.append(.{
-                        .span = .{ self.getTokenStart(), self.pos },
-                        .token = .{ .string = (try self.buffer.clone()).items },
+                        .span = .{ self.start, self.pos },
+                        .token = .{ .string = try self.buffer.toOwnedSlice() },
                     });
 
                     self.state = State.none;
                     self.buffer.clearRetainingCapacity();
                 },
                 '\'' => { // Character lexer.
-                    self.startToken();
+                    const char_start = self.pos;
                     self.state = State.char;
-                    var char: ?u8 = null;
+                    var char: ?u21 = null;
 
                     if (self.chars[1] == '\'') {
-                        try self.logger.err("empty characters not allowed.", .{}, .{ self.pos, self.pos.forward(1) });
+                        try self.advance();
+                        try self.logger.err("empty characters not allowed.", .{}, .{ char_start, self.pos });
                     } else if (self.chars[1] == '\\') {
-                        try self.lexEscapeSequences('\'');
-                        char = self.buffer.items[0];
+                        char = try self.parseEscapeSequence('\'');
+                        try self.advance();
                     } else {
-                        char = self.chars[1];
-                    }
-
-                    try self.advance();
-
-                    if (char != null and self.chars[1] != '\'') {
-                        const start = self.getTokenStart();
-                        while (self.pos.raw < self.src.data.len and self.chars[1] != '\'') {
-                            try self.advance();
+                        while (self.pos.raw < self.src.data.len) : (try self.advance()) {
+                            if (self.chars[1] == '\'') {
+                                try self.advance();
+                                break;
+                            } else try self.buffer.append(self.chars[1]);
                         }
-                        try self.logger.err("character is too large.", .{}, .{ start, self.pos });
-                        try self.logger.info("strings are defined with double quotes in tungsten.", .{}, null);
-                    }
 
-                    try self.advance();
+                        const c = try utftools.codepointFromUtf8(self.buffer.items);
+                        if (c[1] < self.buffer.items.len) {
+                            while (self.pos.raw < self.src.data.len and self.chars[1] != '\'') try self.advance();
+                            try self.logger.err("character is too large.", .{}, .{ char_start, self.pos });
+                            try self.logger.info("strings are defined with double quotes in tungsten.", .{}, null);
+                        }
+
+                        char = c[0];
+                        self.buffer.clearRetainingCapacity();
+                    }
 
                     try self.output.append(.{
-                        .span = .{ self.getTokenStart(), self.pos },
-                        .token = .{ .char = char orelse 0 },
+                        .span = .{ char_start, self.pos },
+                        .token = .{ .char = char orelse 0xFFFD },
                     });
 
                     self.state = State.none;
-                    self.buffer.clearRetainingCapacity();
                 },
                 '/' => switch (self.chars[1]) { // Division or comment.
-                    '/' => while (self.chars[1] != '\n') { // Single-line comment.
-                        try self.advance();
-                    },
+                    // Single-line comment.
+                    '/' => while (self.chars[1] != '\n') try self.advance(),
                     '*' => { // Multi-line comment.
-                        while (!std.mem.eql(u8, &self.chars, "*/")) {
-                            try self.advance();
-                        }
+                        while (!(self.chars[0] == '*' and self.chars[1] == '/')) try self.advance();
                         try self.advance();
                     },
                     else => { // Symbol.
@@ -707,8 +605,8 @@ pub const Lexer = struct {
                     },
                 },
                 ' ' => try self.addBasicToken(), // Separator; like a symbol but not stored.
-                else => if (!containsChar(&symbols, self.chars[0])) {
-                    try self.buffer.append(self.chars[0]);
+                else => if (!isSymbol(self.chars[0])) {
+                    self.basic.len +%= 1;
                 } else { // Symbol.
                     try self.addBasicToken();
                     try self.output.append(.{

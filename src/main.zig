@@ -12,23 +12,24 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     var lexer = Lexer.init(allocator, .{ .name = "main", .data = 
-    \\pub const test: []const u8 = "haiii";
+    \\pub const test = "haiii";
     \\
-    \\pub fn testFunc(string: []const u8, idfk: usize) void {
-    \\  string[0] = 'b';
-    \\  let mut a = 43;
-    \\  a += b;
-    \\  std.printf("%s %d\n", string, a);
+    \\pub func testFunc(str: string, num: number) void {
+    \\  str[0] = '\x62';
+    \\  var a = +43;
+    \\  a += b-2;
+    \\  std.printf("%s %d\n", str, a);
     \\}
     \\
-    \\pub fn main() void {
+    \\pub func main() void {
     \\  testFunc(test, -1);
-    \\  std.println("\uF09F9280 <- skull");
+    \\  std.print('\u{1F480}');
+    \\  std.println(" <- skull");
     \\  std.println("Hello, world!");
     \\  std.printf("1 + 2 = %d\n", 3);
     \\  std.printf("0.1 * 5.5 = %f\n", 0.55);
-    \\  std.printf("3 + 1 = %d\n", 4usize);
-    \\  std.printf("0.2 * 3.3 = %f\n", 0.33f32);
+    \\  std.printf("3 + 1 = %d\n", 4u32);
+    \\  std.printf("0.2 * 3.3 = %f\n", 0.33f16);
     \\  @panic("welp");
     \\}
     });
@@ -37,7 +38,7 @@ pub fn main() !void {
     const tokens = try lexer.lexFull();
 
     for (tokens.items) |token| {
-        std.debug.print(" - {{{}..{}, {s}}}\n", .{ token.span[0].col, token.span[1].col, try token.token.toString(allocator) });
+        std.debug.print(" - {{ {}..{}, {s} }}\n", .{ token.span[0].col, token.span[1].col, try token.token.toString(allocator) });
     }
 
     //var parser = try Parser.init(allocator, tokens, "main", lexer.data);
