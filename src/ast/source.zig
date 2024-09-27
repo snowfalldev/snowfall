@@ -4,9 +4,18 @@ pub const Source = struct {
 };
 
 pub const Position = struct {
-    raw: u32 = 0,
+    raw: usize = 0,
     row: u32 = 0,
-    col: usize = 0,
+    col: u32 = 0,
+
+    // Returns the position, forward N characters.
+    pub inline fn forward(pos: Position, n: usize) Position {
+        return .{
+            .raw = pos.raw + n,
+            .row = pos.row,
+            .col = pos.col + @as(u32, @intCast(n)),
+        };
+    }
 };
 
 pub const Span = struct { Position = .{}, Position = .{} };

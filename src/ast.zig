@@ -1,8 +1,8 @@
-pub const lexer = @import("ast/lexer.zig");
+pub const Lexer = @import("ast/Lexer.zig");
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Token = lexer.Token;
+const Token = Lexer.Token;
 
 // STATEMENTS
 pub const BlockStatement = union(enum) {
@@ -26,7 +26,7 @@ pub const Comparator = enum {
     lt_eq,
 };
 
-pub const BooleanOperator = enum {
+pub const BoolOperator = enum {
     l_and,
     l_or,
 
@@ -39,7 +39,7 @@ pub const BooleanOperator = enum {
     }
 };
 
-pub const Operator = enum {
+pub const MathOperator = enum {
     sum,
     sub,
     div,
@@ -141,7 +141,11 @@ pub const Expression = union(enum) {
 
 pub const Operation = struct {
     operandl: Expression,
-    operator: Operator,
+    op: union(enum) {
+        cmp: Comparator,
+        bool: BoolOperator,
+        math: MathOperator,
+    },
     operandr: Expression,
 };
 
@@ -149,12 +153,12 @@ pub const Operation = struct {
 pub const PointerType = struct {
     constant: bool = false,
     slice: bool = false,
-    expression: NonLiteralOperand = undefined,
+    expression: *Type = undefined,
 };
 
 pub const ArrayType = struct {
     size: usize = 0,
-    expression: NonLiteralOperand = undefined,
+    expression: *Type = undefined,
 };
 
 pub const Type = union(enum) {
@@ -166,7 +170,7 @@ pub const Type = union(enum) {
 
 // CONSTANT DECLARATION
 pub const Constant = struct {
-    typ: Type = undefined,
+    typ: ?Type = undefined,
     val: Expression = undefined,
     public: bool = false,
 };
@@ -175,14 +179,13 @@ pub const Constant = struct {
 pub const Variable = struct {
     typ: ?Type = null,
     val: ?Expression = null,
-    mutable: bool = false,
     public: bool = false,
 };
 
 // VARIABLE ASSIGNMENT
 pub const Assignment = struct {
     variable: NonLiteralOperand = undefined,
-    operator: ?Operator = null,
+    operator: ?MathOperator = null,
     expression: Expression = undefined,
 };
 
@@ -192,24 +195,22 @@ pub const IndexAccess = struct {
 };
 
 // FUNCTIONS
-pub const Parameter = struct {
-    name: []const u8 = "",
-    typ: Type = undefined,
-};
-
-pub const Parameters = std.ArrayList(Parameter);
-
-pub const Function = struct {
-    name: []const u8 = "",
-    params: Parameters = undefined,
-    typ: Type = undefined,
-    body: Block = undefined,
-    public: bool = false,
-};
+pub const Parameters = std.StringArrayHashMap(?Type);
 
 pub const FunctionType = struct {
-    params: std.ArrayList(Type) = undefined,
-    typ: Type = undefined,
+    params: Parameters,
+    typ: ?*Type = null,
+};
+
+pub const Function = struct {
+    typ: FunctionType,
+    body: Block,
+};
+
+pub const FunctionDefinition = struct {
+    func: Function,
+    name: []const u8 = "",
+    public: bool = false,
 };
 
 // FUNCTION CALLS

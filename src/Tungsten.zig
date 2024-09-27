@@ -1,1 +1,2 @@
-pub const PrimitiveValue = @import("vm/value.zig").PrimitiveValue;
+const value = @import("vm/value.zig");
+pub usingnamespace value;

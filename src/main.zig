@@ -1,5 +1,5 @@
 const std = @import("std");
-const Lexer = @import("ast.zig").lexer.Lexer;
+const Lexer = @import("ast.zig").Lexer;
 
 pub const std_options = .{
     .fmt_max_depth = 3,
@@ -23,8 +23,10 @@ pub fn main() !void {
     \\
     \\pub func main() void {
     \\  testFunc(test, -1);
+    \\  const um = '\n';
+    \\  const um2 = 'n';
     \\  std.print('\u{1F480}');
-    \\  std.println(" <- skull");
+    \\  std.println(" <- skull\n\u{1F480}\u{1F480} <- oh it's here twice");
     \\  std.println("Hello, world!");
     \\  std.printf("1 + 2 = %d\n", 3);
     \\  std.printf("0.1 * 5.5 = %f\n", 0.55);
