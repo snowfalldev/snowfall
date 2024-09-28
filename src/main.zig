@@ -39,7 +39,7 @@ pub fn main() !void {
 
     const src = try ast.source.Source.init(.{ .utf8 = data }, .{ .utf8 = "main" }, allocator);
     defer src.deinit();
-    var lexer = ast.Lexer.init(allocator, src);
+    var lexer = try ast.Lexer.init(allocator, src);
     defer lexer.deinit();
 
     const tokens = try lexer.lexFull();

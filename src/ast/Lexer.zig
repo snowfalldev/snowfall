@@ -2,7 +2,6 @@ const std = @import("std");
 const log = @import("../log.zig");
 const util = @import("util.zig");
 const source = @import("source.zig");
-const utftools = @import("utftools");
 
 const Allocator = std.mem.Allocator;
 
@@ -10,6 +9,11 @@ const Logger = @import("../log.zig").Logger;
 const value = @import("../vm/value.zig");
 const NumberType = value.BuiltinValue.NumberType;
 const Number = value.BuiltinValue.Number;
+
+const utftools = @import("utftools");
+const code_point = @import("code_point");
+const CodePoint = code_point.CodePoint;
+const GenCatData = @import("GenCatData");
 
 const allocPrint = std.fmt.allocPrint;
 const parseUnsigned = std.fmt.parseUnsigned;
@@ -35,7 +39,7 @@ pub const Token = union(enum) {
     number: Number,
 
     // other
-    symbol: u8,
+    symbol: u21,
     keyword: []const u8,
     builtin_type: []const u8,
     identifier: []const u8,
@@ -50,7 +54,7 @@ pub const Token = union(enum) {
             return .{ .bool = true };
         } else if (std.mem.eql(u8, string, "false")) {
             return .{ .bool = false };
-        } else if (isIdentifier(string)) {
+        } else if (string.len > 0 and !isNumberChar(string[0])) {
             if (containsString(&keywords, string)) {
                 return .{ .keyword = string };
             } else if (value.BuiltinType.string_map.has(string)) {
@@ -81,7 +85,10 @@ pub const Token = union(enum) {
                 try writer.writeAll(" }");
             },
 
-            .symbol => |v| try writer.print("symbol: {c}", .{v}),
+            .symbol => |v| {
+                try writer.writeAll("symbol: ");
+                try utftools.writeCodepointToUtf8(v, writer);
+            },
             .identifier => |v| try writer.print("identifier: {s}", .{v}),
             .builtin_type => |v| try writer.print("built-in type: {s}", .{v}),
             .keyword => |v| try writer.print("keyword: {s}", .{v}),
@@ -116,7 +123,7 @@ pub const LocatedToken = struct {
 pub const Tokens = std.ArrayList(LocatedToken);
 
 // Non-decimal representation characters in numbers.
-inline fn isNonDecNumberChar(char: u8) bool {
+inline fn isNonDigitNumberChar(char: u21) bool {
     return switch (char) {
         'x',
         'X', // hexadecimal
@@ -132,7 +139,7 @@ inline fn isNonDecNumberChar(char: u8) bool {
 }
 
 // All valid separating symbols.
-inline fn isSeparatingSymbol(char: u8) bool {
+inline fn isSeparatingSymbol(char: u21) bool {
     return switch (char) {
         '&', // logical/bitwise and
         '|', // logical/bitwise or
@@ -164,13 +171,8 @@ inline fn isSeparatingSymbol(char: u8) bool {
 }
 
 // All valid symbols.
-inline fn isSymbol(char: u8) bool {
+inline fn isSymbol(char: u21) bool {
     return char == '.' or isSeparatingSymbol(char);
-}
-
-// Check if "content" (string with no spaces) is a valid identifier.
-inline fn isIdentifier(content: []const u8) bool {
-    return content.len > 0 and !isNumberChar(content[0]);
 }
 
 // zig fmt: off
@@ -227,7 +229,10 @@ pos: Position = .{},
 last: Position = .{},
 start: Position = .{},
 
-chars: [2]u8,
+iter: code_point.Iterator,
+gcd: GenCatData,
+current: CodePoint,
+next: ?CodePoint = null,
 basic: []const u8 = "",
 buffer: std.ArrayList(u8),
 state: State = .none,
@@ -238,15 +243,16 @@ failed: bool = false,
 const Self = @This();
 
 // Initializes a new lexer.
-pub fn init(allocator: Allocator, src: source.Source) Self {
+pub fn init(allocator: Allocator, src: source.Source) !Self {
+    var iter = code_point.Iterator{ .bytes = src.data };
+    const current = iter.next();
     return .{
         .allocator = allocator,
         .output = Tokens.init(allocator),
         .src = src,
-        .chars = .{
-            getOptional(u8, src.data, 0) orelse 0,
-            getOptional(u8, src.data, 1) orelse 0,
-        },
+        .iter = iter,
+        .gcd = try GenCatData.init(allocator),
+        .current = current orelse undefined,
         .buffer = std.ArrayList(u8).init(allocator),
         .logger = Logger(.lexer).init(allocator, src),
     };
@@ -255,8 +261,9 @@ pub fn init(allocator: Allocator, src: source.Source) Self {
 // De-initializes the lexer.
 // This should only be run after the output of the lexer is done being used.
 pub fn deinit(self: *Self) void {
-    self.output.deinit();
+    self.gcd.deinit();
     self.buffer.deinit();
+    self.output.deinit();
     self.logger.deinit();
 }
 
@@ -270,23 +277,24 @@ pub fn clear(self: *Self, free: bool) void {
         self.buffer.clearRetainingCapacity();
     }
 
+    self.pos = .{};
+    self.last = .{};
+    self.start = .{};
+
+    self.iter.i = 0;
+    self.current = self.iter.next() orelse undefined;
+    self.next = null;
     self.state = .none;
-    self.chars = .{
-        getOptional(u8, self.src.data, 0) orelse 0,
-        getOptional(u8, self.src.data, 1) orelse 0,
-    };
-    self.pos = .{ .raw = 0, .row = 0, .col = 0 };
-    self.start = .{ .raw = 0, .row = 0, .col = 0 };
 }
 
 // Lexes the entire queue.
-pub fn lexFull(self: *Self) !Tokens {
-    while (self.pos.raw < self.src.data.len and !self.failed) try self.lexNext();
+pub inline fn lexFull(self: *Self) !Tokens {
+    while (!self.finished()) try self.lexNext();
     return self.output;
 }
 
 // Returns the last token the lexer outputted.
-pub fn getLastToken(self: *Self) ?LocatedToken {
+pub inline fn getLastToken(self: *Self) ?LocatedToken {
     if (self.output.items.len == 0) return null;
     return self.output.items[self.output.items.len - 1];
 }
@@ -296,65 +304,79 @@ pub fn addBasicToken(self: *Self, comptime symbol: bool) !void {
     if (self.basic.len != 0) {
         self.basic.ptr = @ptrCast(&self.src.data[self.start.raw]);
 
-        if (Token.fromBasicString(self.basic)) |token| {
+        if (Token.fromBasicString(self.basic)) |token|
             try self.output.append(.{ .span = .{ self.start, self.last }, .token = token });
-        }
 
         self.basic.len = 0;
     }
 
     if (symbol) try self.output.append(.{
         .span = .{ self.pos, self.pos },
-        .token = .{ .symbol = self.chars[0] },
+        .token = .{ .symbol = self.current.code },
     });
 }
 
 // Moves the lexer position, and sets the current and next characters.
-// Skips newline characters.
+// Skips separator characters.
 pub fn advance(self: *Self) !void {
-    return self.advanceInner(1, false);
-}
-
-fn advanceSpecial(self: *Self, n: usize, comptime cp: bool) !void {
-    return self.advanceInner(n, cp);
-}
-
-inline fn advanceInner(self: *Self, n: usize, comptime cp: bool) !void {
-    for (n) |_| {
-        self.last = self.pos;
+    self.next = null;
+    self.current = self.iter.next() orelse {
         self.pos.raw += 1;
         self.pos.col += 1;
+        return;
+    };
 
-        if (!cp) {
-            var new_lines: usize = 0;
+    self.last = self.pos;
+    self.pos.raw = self.current.offset;
+    self.pos.col += self.current.len;
 
-            while (self.pos.raw < self.src.data.len and self.src.data[self.pos.raw] == '\n') : (new_lines += 1) {
-                if (self.state == .string) try self.buffer.append('\n');
+    var separators: u32 = 0;
+    var separators_this_line: u32 = 0;
+    var new_lines: u32 = 0;
 
-                if (new_lines == 0 and self.state == .none) {
-                    try self.addBasicToken(false);
-                }
+    while (self.isSeparator(self.current.code)) : (separators += self.current.len) {
+        separators_this_line += self.current.len;
 
-                self.pos.raw += 1;
-                self.pos.row += 1;
-                self.pos.col = 0;
-            }
-        } else if (self.src.data[self.pos.raw] == '\n') return error.NewLineInCodepointAdvance;
+        if (self.current.code == '\n') {
+            new_lines += 1;
+            separators_this_line = 0;
+        }
+
+        if (separators == 0 and self.state == .none) try self.addBasicToken(false);
+
+        self.current = self.iter.next() orelse undefined;
     }
 
-    self.chars = .{
-        getOptional(u8, self.src.data, self.pos.raw) orelse 0,
-        getOptional(u8, self.src.data, self.pos.raw + 1) orelse 0,
-    };
+    if (separators != 0) {
+        self.pos.raw += separators;
+        self.pos.col += separators;
+        if (new_lines != 0) {
+            self.pos.row += new_lines;
+            self.pos.col = separators_this_line;
+        }
+        self.start = self.pos;
+    }
 }
 
-// Lex string and character escape sequences.
-pub fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
+pub inline fn peek(self: *Self) CodePoint {
+    if (self.next == null) self.next = self.iter.peek();
+    return self.next orelse undefined;
+}
+
+pub inline fn finished(self: Self) bool {
+    return (self.pos.raw >= self.src.data.len or self.failed);
+}
+
+inline fn isSeparator(self: *Self, char: u21) bool {
+    return char == '\n' or (self.state == .none and self.gcd.isSeparator(self.current.code));
+}
+
+inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
     const esc_seq_start = self.pos;
 
-    return switch (self.chars[1]) {
+    return switch (self.peek().code) {
         'n', 'r', 't', '\\', exit => {
-            const char = self.chars[1];
+            const char = self.peek().code;
             try self.advance();
             return switch (char) {
                 'n' => '\n',
@@ -369,7 +391,10 @@ pub fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
             if (self.src.data.len > self.pos.raw + 3) {
                 try self.advance(); // Advance past '\'.
                 try self.advance(); // Advance past 'x'.
-                const chars = self.chars;
+                const chars: [2]u8 = .{
+                    @truncate(self.current.code),
+                    @truncate(self.peek().code),
+                };
                 try self.advance();
 
                 return parseUnsigned(u8, &chars, 16) catch {
@@ -385,17 +410,17 @@ pub fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
             try self.advance(); // Advance past '\'.
             try self.advance(); // Advance past 'u'.
 
-            if (self.chars[0] == '{') parse: {
+            if (self.current.code == '{') parse: {
                 try self.advance(); // Advance past '{'.
 
                 const esc_char_start = self.pos;
                 var idx: usize = 5;
 
-                while (self.pos.raw < self.src.data.len) : (try self.advance()) {
-                    if (self.chars[0] == '}') break;
-                    if (!isHexadecimalChar(self.chars[0]) or self.chars[1] == '\n') break :parse;
+                while (!self.finished()) : (try self.advance()) {
+                    if (self.current.code == '}') break;
+                    if (!isHexadecimalChar(self.current.code) or self.isSeparator(self.peek().code)) break :parse;
                     if (idx == 0) {
-                        while (self.pos.raw < self.src.data.len and self.chars[0] != '}') try self.advance();
+                        while (!self.finished() and self.current.code != '}') try self.advance();
                         try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos });
                         return 0xFFFD;
                     }
@@ -409,7 +434,7 @@ pub fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                 } else return @truncate(char);
             }
 
-            while (self.pos.raw < self.src.data.len and isHexadecimalChar(self.chars[1])) try self.advance();
+            while (!self.finished() and isHexadecimalChar(self.peek().code)) try self.advance();
             try self.advance();
             try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, self.pos });
             return 0xFFFD;
@@ -421,6 +446,101 @@ pub fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
     };
 }
 
+inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
+    var number_span = Span{ self.pos, self.pos };
+    self.state = .number;
+
+    const decimal = !(self.current.code == '0' and isNonDigitNumberChar(self.peek().code));
+    var number_type = NumberType.u64;
+    var explicit_type_char: ?CodePoint = null;
+
+    if (explicit_sign_number) {
+        number_type = NumberType.i64;
+        try self.advance();
+    }
+
+    while (!self.finished()) : (try self.advance()) {
+        number_span[1] = self.pos;
+        // TODO: use labeled switch
+        switch (self.current.code) {
+            '0'...'9', '_' => {},
+            'u', 'i', 'f' => if (decimal) {
+                explicit_type_char = self.current;
+                break;
+            } else if (self.current.code != 'f') return self.fatal("invalid number format.", .{}, number_span),
+            'a'...'d', 'A'...'F' => if (decimal) return self.fatal("invalid number format.", .{}, number_span),
+            '.' => {
+                if (!decimal) return self.fatal("invalid number format.", .{}, number_span);
+                if (number_type == NumberType.f64) break;
+                number_type = NumberType.f64;
+            },
+            else => return self.fatal("invalid number format.", .{}, number_span),
+        }
+
+        if (isSeparatingSymbol(self.peek().code) or self.isSeparator(self.peek().code)) {
+            try self.advance();
+            break;
+        }
+    }
+
+    const number_data = self.src.data[number_span[0].raw..self.pos.raw];
+
+    var explicit_type_span = Span{ self.pos, self.pos };
+    var type_string: []const u8 = @tagName(number_type);
+
+    var err = false;
+    if (explicit_type_char) |char| get_type: {
+        while (!self.finished()) {
+            if (isSymbol(self.current.code) or self.isSeparator(self.current.code)) break;
+            explicit_type_span[1] = self.pos;
+            try self.advance();
+        }
+
+        type_string = self.src.data[explicit_type_span[0].raw..self.pos.raw];
+
+        var new_type: ?NumberType = null;
+        if (type_string.len > 1) {
+            new_type = NumberType.string_map.get(type_string);
+            if (new_type == null) {
+                try self.logger.err("unknown type.", .{}, explicit_type_span);
+                err = true;
+                break :get_type;
+            }
+        } else new_type = switch (char.code) {
+            'i' => .i64,
+            'u' => .u64,
+            'f' => .f64,
+            else => unreachable,
+        };
+
+        if (char.code == 'u') {
+            if (number_type == .i64 and number_data[0] == '-') {
+                try self.logger.err("unsigned integers cannot be negative.", .{}, explicit_type_span);
+                err = true;
+            } else if (number_type == .f64) {
+                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, explicit_type_span);
+                err = true;
+            }
+        } else if (char.code == 'i' and number_type == .f64) {
+            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, explicit_type_span);
+            err = true;
+        }
+
+        number_type = new_type.?;
+        number_span[1] = explicit_type_span[1];
+    }
+
+    try self.output.append(.{
+        .span = number_span,
+        .token = .{ .number = Number.parse(number_type, number_data, 0) catch num: {
+            try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span);
+            break :num Number{ .u64 = 0 };
+        } },
+    });
+
+    self.state = .none;
+}
+
 inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span) !void {
     try self.logger.err(fmt, args, span);
     self.failed = true;
@@ -428,13 +548,13 @@ inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Spa
 
 // Lex characters into the next token(s).
 pub fn lexNext(self: *Self) !void {
-    if (self.pos.raw >= self.src.data.len or self.failed) return;
+    if (self.finished()) return;
 
     const initial_len = self.output.items.len;
 
-    while (self.pos.raw < self.src.data.len and initial_len == self.output.items.len) : (try self.advance()) {
+    while (!self.finished() and initial_len == self.output.items.len) : (try self.advance()) {
         if (self.basic.len == 0) self.start = self.pos;
-        var explicit_sign_number = (self.chars[0] == '+' or self.chars[0] == '-') and isNumberChar(self.chars[1]);
+        var explicit_sign_number = (self.current.code == '+' or self.current.code == '-') and isNumberChar(self.peek().code);
 
         // Explicitly +/- numbers; we must ensure the last token was not an expression.
         if (explicit_sign_number) {
@@ -443,105 +563,11 @@ pub fn lexNext(self: *Self) !void {
             explicit_sign_number = explicit_sign_number and !last_token.?.token.isExpression();
         }
 
-        // Number lexer.
-        if (!isIdentifier(self.basic) and (isNumberChar(self.chars[0]) or explicit_sign_number)) {
-            var number_span = Span{ self.pos, self.pos };
-            self.state = .number;
+        if (self.basic.len == 0 and (isNumberChar(self.current.code) or explicit_sign_number))
+            return self.parseNumber(explicit_sign_number);
 
-            const decimal = !(self.chars[0] == '0' and isNonDecNumberChar(self.chars[1]));
-            var number_type = NumberType.u64;
-            var explicit_type_char: ?u8 = null;
-
-            if (explicit_sign_number) {
-                number_type = NumberType.i64;
-                try self.advance();
-            }
-
-            while (self.pos.raw < self.src.data.len) : (try self.advance()) {
-                number_span[1] = self.pos;
-                // TODO: use labeled switch
-                switch (self.chars[0]) {
-                    '0'...'9', '_' => {},
-                    'u', 'i', 'f' => if (decimal) {
-                        explicit_type_char = self.chars[0];
-                        break;
-                    } else if (self.chars[0] != 'f') return self.fatal("invalid number format.", .{}, number_span),
-                    'a'...'d', 'A'...'F' => if (decimal) return self.fatal("invalid number format.", .{}, number_span),
-                    '.' => {
-                        if (!decimal) return self.fatal("invalid number format.", .{}, number_span);
-                        if (number_type == NumberType.f64) break;
-                        number_type = NumberType.f64;
-                    },
-                    else => return self.fatal("invalid number format.", .{}, number_span),
-                }
-
-                if (isSeparatingSymbol(self.chars[1]) or self.chars[1] == '\n') {
-                    try self.advance();
-                    break;
-                }
-            }
-
-            const number_data = self.src.data[number_span[0].raw..self.pos.raw];
-
-            var explicit_type_span = Span{ self.pos, self.pos };
-            var type_string: []const u8 = @tagName(number_type);
-
-            var err = false;
-            if (explicit_type_char) |char| get_type: {
-                while (self.pos.raw < self.src.data.len) {
-                    if (isSymbol(self.chars[0]) or self.chars[0] == ' ') break;
-                    explicit_type_span[1] = self.pos;
-                    try self.advance();
-                }
-
-                type_string = self.src.data[explicit_type_span[0].raw..self.pos.raw];
-
-                var new_type: ?NumberType = null;
-                if (type_string.len > 1) {
-                    new_type = NumberType.string_map.get(type_string);
-                    if (new_type == null) {
-                        try self.logger.err("unknown type.", .{}, explicit_type_span);
-                        err = true;
-                        break :get_type;
-                    }
-                } else new_type = switch (char) {
-                    'i' => .i64,
-                    'u' => .u64,
-                    'f' => .f64,
-                    else => unreachable,
-                };
-
-                if (char == 'u') {
-                    if (number_type == .i64 and number_data[0] == '-') {
-                        try self.logger.err("unsigned integers cannot be negative.", .{}, explicit_type_span);
-                        err = true;
-                    } else if (number_type == .f64) {
-                        try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, explicit_type_span);
-                        err = true;
-                    }
-                } else if (char == 'i' and number_type == .f64) {
-                    try self.logger.err("floating-point numbers cannot become signed integers.", .{}, explicit_type_span);
-                    err = true;
-                }
-
-                number_type = new_type.?;
-                number_span[1] = explicit_type_span[1];
-            }
-
-            try self.output.append(.{
-                .span = number_span,
-                .token = .{ .number = Number.parse(number_type, number_data, 0) catch num: {
-                    try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span);
-                    break :num Number{ .u64 = 0 };
-                } },
-            });
-
-            self.state = .none;
-            return;
-        }
-
-        switch (self.chars[0]) {
-            '"' => { // String lexer.
+        switch (self.current.code) {
+            '"' => { // String parser.
                 self.state = .string;
                 const start = self.pos;
                 try self.advance();
@@ -549,14 +575,14 @@ pub fn lexNext(self: *Self) !void {
 
                 var out: []const u8 = "";
 
-                while (self.pos.raw < self.src.data.len) : (try self.advance()) {
-                    if (self.chars[0] == '"') {
+                while (!self.finished()) : (try self.advance()) {
+                    if (self.current.code == '"') {
                         out = if (last == start.raw) self.src.data[last..self.pos.raw] else esc: {
                             try self.buffer.appendSlice(self.src.data[last..self.pos.raw]);
                             break :esc try self.buffer.toOwnedSlice();
                         };
                         break;
-                    } else if (self.chars[0] == '\\') {
+                    } else if (self.current.code == '\\') {
                         try self.buffer.appendSlice(self.src.data[last..self.pos.raw]);
                         const c = try self.parseEscapeSequence('"');
                         try utftools.writeCodepointToUtf8(c, self.buffer.writer());
@@ -571,36 +597,28 @@ pub fn lexNext(self: *Self) !void {
 
                 self.state = .none;
             },
-            '\'' => { // Character lexer.
+            '\'' => { // Character parser.
                 self.state = .char;
                 const start = self.pos;
                 var char: ?u21 = null;
 
-                if (self.chars[1] == '\'') {
+                if (self.peek().code == '\'') {
                     try self.advance();
                     try self.logger.err("empty characters not allowed.", .{}, .{ start, self.pos });
-                } else if (self.chars[1] == '\\') {
+                } else if (self.peek().code == '\\') {
                     try self.advance();
                     char = try self.parseEscapeSequence('\'');
                     try self.advance();
                 } else {
-                    while (self.pos.raw < self.src.data.len and self.chars[1] != '\'') try self.advance();
-                    const end = self.pos;
                     try self.advance();
 
-                    var err = false;
-                    const c = utftools.codepointFromUtf8(self.src.data[start.raw + 1 .. self.pos.raw]) catch blk: {
-                        try self.logger.err("invalid character.", .{}, .{ start, end });
-                        err = true;
-                        break :blk .{ 0xFFFD, 3 };
-                    };
-
-                    if (!err) if (c[1] < self.buffer.items.len) {
-                        try self.logger.err("character is too large.", .{}, .{ start, end });
+                    if (self.peek().code != '\'') {
+                        while (!self.finished() and self.peek().code != '\'') try self.advance();
+                        try self.logger.err("character is too large.", .{}, .{ start, self.pos });
                         try self.logger.info("strings are defined with double quotes in tungsten.", .{}, null);
-                    };
+                    } else char = self.current.code;
 
-                    char = c[0];
+                    try self.advance();
                     self.buffer.clearRetainingCapacity();
                 }
 
@@ -612,28 +630,19 @@ pub fn lexNext(self: *Self) !void {
                 self.state = .none;
             },
             // Division or comment.
-            '/' => switch (self.chars[1]) {
+            '/' => switch (self.peek().code) {
                 // Single-line comment.
-                '/' => while (self.chars[1] != '\n') try self.advance(),
+                '/' => while (self.peek().code != '\n') try self.advance(),
                 // Multi-line comment.
                 '*' => {
-                    while (!(self.chars[0] == '*' and self.chars[1] == '/')) try self.advance();
+                    while (!(self.current.code == '*' and self.peek().code == '/')) try self.advance();
                     try self.advance();
                 },
                 // Symbol.
                 else => try self.addBasicToken(true),
             },
-            ' ' => try self.addBasicToken(false),
-            else => if (!isSymbol(self.chars[0])) {
-                const char = utftools.codepointFromUtf8(self.src.data[self.pos.raw..]) catch {
-                    return self.fatal("invalid unicode sequence in source code.", .{}, .{});
-                };
-                const size = char[1];
-                self.basic.len +%= size;
-                if (size != 1) self.advanceSpecial(size - 1, true) catch |e| {
-                    if (e != error.NewLineInCodepointAdvance) return e;
-                    return self.fatal("invalid unicode sequence in source code.", .{}, .{});
-                };
+            else => if (!isSymbol(self.current.code)) {
+                self.basic.len +%= self.current.len;
             } else try self.addBasicToken(true), // Symbol.
         }
     }

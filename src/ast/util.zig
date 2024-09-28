@@ -7,19 +7,19 @@ pub fn containsString(comptime haystack: []const []const u8, needle: []const u8)
     return false;
 }
 
-pub inline fn isNumberChar(char: u8) bool {
+pub inline fn isNumberChar(char: u21) bool {
     return char >= '0' and char <= '9';
 }
 
-pub inline fn isHexadecimalChar(char: u8) bool {
+pub inline fn isHexadecimalChar(char: u21) bool {
     return (char >= '0' and char <= '9') or (char >= 'A' and char <= 'F') or (char >= 'a' and char <= 'f');
 }
 
-pub inline fn isLetterChar(char: u8) bool {
+pub inline fn isLetterChar(char: u21) bool {
     return (char >= 'A' and char <= 'Z') or (char >= 'a' and char <= 'z');
 }
 
-pub inline fn isAlphanumericChar(char: u8) bool {
+pub inline fn isAlphanumericChar(char: u21) bool {
     return isNumberChar(char) or isLetterChar(char);
 }
 

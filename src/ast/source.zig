@@ -71,7 +71,7 @@ pub const Source = struct {
 };
 
 pub const Position = struct {
-    raw: usize = 0,
+    raw: u32 = 0,
     row: u32 = 0,
     col: u32 = 0,
 };
