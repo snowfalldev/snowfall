@@ -20,6 +20,26 @@ pub const TypeDesc = union(enum) {
     }
 };
 
+pub const TypeSet = struct {
+    inner: std.AutoHashMap(u64, void),
+
+    pub inline fn contains(self: TypeSet, desc: TypeDesc) bool {
+        return self.inner.contains(desc.toU64());
+    }
+
+    pub inline fn count(self: TypeSet) usize {
+        return self.inner.count();
+    }
+
+    pub inline fn put(self: *TypeSet, desc: TypeDesc) !void {
+        return self.inner.put(desc.toU64(), void{});
+    }
+
+    pub inline fn remove(self: *TypeSet, desc: TypeDesc) bool {
+        return self.inner.remove(desc.toU64());
+    }
+};
+
 // zig fmt: off
 
 pub const BuiltinType = enum(u8) {

@@ -6,6 +6,14 @@
             .url = "git+https://github.com/notsatvrn/zig-utftools#907319711f345decef1afe21f60444bd881dd5b5",
             .hash = "1220e874cda3a6559d28d97e7b199bb00c17fdc0660ca9ec9ac34e693e9d3b1345dd",
         },
+        .jdz_allocator = .{
+            .url = "git+https://github.com/joadnacer/jdz_allocator#ea14e0efc3328a6b9e7dd53bb91b9eec2efe3f96",
+            .hash = "12205353c7f550b1aadf245d70a30d5a0a92eb151f735e15358ff35fcfe53343c93f",
+        },
+        .zg = .{
+            .url = "https://codeberg.org/dude_the_builder/zg/archive/v0.13.2.tar.gz",
+            .hash = "122055beff332830a391e9895c044d33b15ea21063779557024b46169fb1984c6e40",
+        },
     },
     .paths = .{
         "",

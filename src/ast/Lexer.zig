@@ -312,22 +312,34 @@ pub fn addBasicToken(self: *Self, comptime symbol: bool) !void {
 // Moves the lexer position, and sets the current and next characters.
 // Skips newline characters.
 pub fn advance(self: *Self) !void {
-    self.last = self.pos;
-    self.pos.raw += 1;
-    self.pos.col += 1;
+    return self.advanceInner(1, false);
+}
 
-    var new_lines: usize = 0;
+fn advanceSpecial(self: *Self, n: usize, comptime cp: bool) !void {
+    return self.advanceInner(n, cp);
+}
 
-    while (self.pos.raw < self.src.data.len and self.src.data[self.pos.raw] == '\n') : (new_lines += 1) {
-        if (self.state == .string) try self.buffer.append('\n');
-
-        if (new_lines == 0 and self.state == .none) {
-            try self.addBasicToken(false);
-        }
-
+inline fn advanceInner(self: *Self, n: usize, comptime cp: bool) !void {
+    for (n) |_| {
+        self.last = self.pos;
         self.pos.raw += 1;
-        self.pos.row += 1;
-        self.pos.col = 0;
+        self.pos.col += 1;
+
+        if (!cp) {
+            var new_lines: usize = 0;
+
+            while (self.pos.raw < self.src.data.len and self.src.data[self.pos.raw] == '\n') : (new_lines += 1) {
+                if (self.state == .string) try self.buffer.append('\n');
+
+                if (new_lines == 0 and self.state == .none) {
+                    try self.addBasicToken(false);
+                }
+
+                self.pos.raw += 1;
+                self.pos.row += 1;
+                self.pos.col = 0;
+            }
+        } else if (self.src.data[self.pos.raw] == '\n') return error.NewLineInCodepointAdvance;
     }
 
     self.chars = .{
@@ -360,7 +372,7 @@ pub fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                 const chars = self.chars;
                 try self.advance();
 
-                return parseUnsigned(u21, &chars, 16) catch {
+                return parseUnsigned(u8, &chars, 16) catch {
                     try self.logger.err("bad hexadecimal number.", .{}, .{ esc_seq_start, self.pos }); // Overflow is unreachable.
                     return 0xFFFD;
                 };
@@ -380,18 +392,21 @@ pub fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                 var idx: usize = 5;
 
                 while (self.pos.raw < self.src.data.len) : (try self.advance()) {
+                    if (self.chars[0] == '}') break;
                     if (!isHexadecimalChar(self.chars[0]) or self.chars[1] == '\n') break :parse;
-                    if (self.chars[1] == '}' or idx == 0) break;
+                    if (idx == 0) {
+                        while (self.pos.raw < self.src.data.len and self.chars[0] != '}') try self.advance();
+                        try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos });
+                        return 0xFFFD;
+                    }
                     idx -%= 1;
                 }
 
-                try self.advance();
-
-                const char = try parseUnsigned(u21, self.src.data[esc_char_start.raw..self.pos.raw], 16);
+                const char = parseUnsigned(u24, self.src.data[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
                 if (char > 0x10FFFF) {
-                    try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, self.pos });
+                    try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos });
                     return 0xFFFD;
-                } else return char;
+                } else return @truncate(char);
             }
 
             while (self.pos.raw < self.src.data.len and isHexadecimalChar(self.chars[1])) try self.advance();
@@ -610,7 +625,15 @@ pub fn lexNext(self: *Self) !void {
             },
             ' ' => try self.addBasicToken(false),
             else => if (!isSymbol(self.chars[0])) {
-                self.basic.len +%= 1;
+                const char = utftools.codepointFromUtf8(self.src.data[self.pos.raw..]) catch {
+                    return self.fatal("invalid unicode sequence in source code.", .{}, .{});
+                };
+                const size = char[1];
+                self.basic.len +%= size;
+                if (size != 1) self.advanceSpecial(size - 1, true) catch |e| {
+                    if (e != error.NewLineInCodepointAdvance) return e;
+                    return self.fatal("invalid unicode sequence in source code.", .{}, .{});
+                };
             } else try self.addBasicToken(true), // Symbol.
         }
     }

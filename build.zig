@@ -7,8 +7,12 @@ pub fn build(b: *std.Build) anyerror!void {
 
     // DEPENDENCIES
 
+    const zg = b.dependency("zg", .{});
+    const zg_mod = zg.module("zg");
     const utftools = b.dependency("utftools", .{});
     const utftools_mod = utftools.module("utftools");
+    const jdz_allocator = b.dependency("jdz_allocator", .{});
+    const jdz_allocator_mod = jdz_allocator.module("jdz_allocator");
 
     // LIBRARY
 
@@ -20,7 +24,9 @@ pub fn build(b: *std.Build) anyerror!void {
         .version = try std.SemanticVersion.parse("0.0.1"),
     });
 
+    lib.root_module.addImport("zg", zg_mod);
     lib.root_module.addImport("utftools", utftools_mod);
+    lib.root_module.addImport("jdz_allocator", jdz_allocator_mod);
     b.installArtifact(lib);
 
     // RUNTIME
@@ -33,7 +39,9 @@ pub fn build(b: *std.Build) anyerror!void {
         .version = try std.SemanticVersion.parse("0.0.1"),
     });
 
+    exe.root_module.addImport("zg", zg_mod);
     exe.root_module.addImport("utftools", utftools_mod);
+    exe.root_module.addImport("jdz_allocator", jdz_allocator_mod);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -50,7 +58,9 @@ pub fn build(b: *std.Build) anyerror!void {
         .optimize = optimize,
     });
 
+    tests.root_module.addImport("zg", zg_mod);
     tests.root_module.addImport("utftools", utftools_mod);
+    tests.root_module.addImport("jdz_allocator", jdz_allocator_mod);
     const tests_step = b.step("test", "Run all tests");
     tests_step.dependOn(&b.addRunArtifact(tests).step);
 }

@@ -1,3 +1,4 @@
+pub const source = @import("ast/source.zig");
 pub const Lexer = @import("ast/Lexer.zig");
 
 const std = @import("std");
