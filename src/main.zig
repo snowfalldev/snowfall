@@ -1,6 +1,5 @@
 const std = @import("std");
 const ast = @import("ast.zig");
-const jdz = @import("jdz_allocator");
 
 pub const std_options = .{
     .fmt_max_depth = 3,
@@ -8,9 +7,9 @@ pub const std_options = .{
 };
 
 pub fn main() !void {
-    var jdzalloc = jdz.JdzAllocator(.{}).init();
-    defer jdzalloc.deinit();
-    const allocator = jdzalloc.allocator();
+    var alloc = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = alloc.deinit();
+    const allocator = alloc.allocator();
 
     const data =
         \\pub const test = "haiii";
@@ -43,9 +42,12 @@ pub fn main() !void {
     defer lexer.deinit();
 
     const tokens = try lexer.lexFull();
+    defer ast.Lexer.deinitTokens(tokens, allocator);
 
-    for (tokens.items) |token| {
-        std.debug.print(" - {{ {}..{}, {s} }}\n", .{ token.span[0].col, token.span[1].col, try token.token.toString(allocator) });
+    for (tokens) |token| {
+        const string = try token.token.toString(allocator);
+        defer allocator.free(string);
+        std.debug.print(" - {{ {}..{}, {s} }}\n", .{ token.span[0].col, token.span[1].col, string });
     }
 
     //var parser = try Parser.init(allocator, tokens, "main", lexer.data);

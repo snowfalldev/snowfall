@@ -7,14 +7,11 @@ pub fn build(b: *std.Build) anyerror!void {
 
     // DEPENDENCIES
 
-    const utftools = b.dependency("utftools", .{});
-    const utftools_mod = utftools.module("utftools");
-    const jdz_allocator = b.dependency("jdz_allocator", .{});
-    const jdz_allocator_mod = jdz_allocator.module("jdz_allocator");
-
     const zg = b.dependency("zg", .{});
     const code_point_mod = zg.module("code_point");
     const gencatdata_mod = zg.module("GenCatData");
+    const utftools = b.dependency("utftools", .{});
+    const utftools_mod = utftools.module("utftools");
 
     // LIBRARY
 
@@ -29,7 +26,6 @@ pub fn build(b: *std.Build) anyerror!void {
     lib.root_module.addImport("code_point", code_point_mod);
     lib.root_module.addImport("GenCatData", gencatdata_mod);
     lib.root_module.addImport("utftools", utftools_mod);
-    lib.root_module.addImport("jdz_allocator", jdz_allocator_mod);
     b.installArtifact(lib);
 
     // RUNTIME
@@ -45,7 +41,6 @@ pub fn build(b: *std.Build) anyerror!void {
     exe.root_module.addImport("code_point", code_point_mod);
     exe.root_module.addImport("GenCatData", gencatdata_mod);
     exe.root_module.addImport("utftools", utftools_mod);
-    exe.root_module.addImport("jdz_allocator", jdz_allocator_mod);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -65,7 +60,6 @@ pub fn build(b: *std.Build) anyerror!void {
     tests.root_module.addImport("code_point", code_point_mod);
     tests.root_module.addImport("GenCatData", gencatdata_mod);
     tests.root_module.addImport("utftools", utftools_mod);
-    tests.root_module.addImport("jdz_allocator", jdz_allocator_mod);
     const tests_step = b.step("test", "Run all tests");
     tests_step.dependOn(&b.addRunArtifact(tests).step);
 }

@@ -35,7 +35,7 @@ pub const Token = union(enum) {
     undefined,
     bool: bool,
     char: u21,
-    string: []const u8,
+    string: String,
     number: Number,
 
     // other
@@ -43,6 +43,11 @@ pub const Token = union(enum) {
     keyword: []const u8,
     builtin_type: []const u8,
     identifier: []const u8,
+
+    pub const String = struct {
+        str: []const u8,
+        managed: bool = true,
+    };
 
     // Convert from a string representing a basic token (if possible).
     pub fn fromBasicString(string: []const u8) ?Token {
@@ -78,7 +83,10 @@ pub const Token = union(enum) {
                 try utftools.writeCodepointToUtf8(v, writer);
                 try writer.writeByte('\'');
             },
-            .string => |v| try writer.print("string: \"{s}\"", .{v}),
+            .string => |v| {
+                try writer.print("string: \"{s}\"", .{v.str});
+                if (v.managed) try writer.print(" (managed)", .{});
+            },
             .number => |v| {
                 try writer.writeAll("number: { ");
                 try v.write(writer);
@@ -121,6 +129,14 @@ pub const LocatedToken = struct {
 };
 
 pub const Tokens = std.ArrayList(LocatedToken);
+
+pub fn deinitTokens(tokens: []LocatedToken, allocator: Allocator) void {
+    for (tokens) |token|
+        if (token.token == .string and token.token.string.managed)
+            allocator.free(token.token.string.str);
+
+    allocator.free(tokens);
+}
 
 // Non-decimal representation characters in numbers.
 inline fn isNonDigitNumberChar(char: u21) bool {
@@ -288,9 +304,9 @@ pub fn clear(self: *Self, free: bool) void {
 }
 
 // Lexes the entire queue.
-pub inline fn lexFull(self: *Self) !Tokens {
+pub inline fn lexFull(self: *Self) ![]LocatedToken {
     while (!self.finished()) try self.lexNext();
-    return self.output;
+    return self.output.toOwnedSlice();
 }
 
 // Returns the last token the lexer outputted.
@@ -574,13 +590,17 @@ pub fn lexNext(self: *Self) !void {
                 var last = self.pos.raw;
 
                 var out: []const u8 = "";
+                var managed: bool = true;
 
                 while (!self.finished()) : (try self.advance()) {
                     if (self.current.code == '"') {
-                        out = if (last == start.raw) self.src.data[last..self.pos.raw] else esc: {
+                        if (last == start.raw) {
+                            out = self.src.data[last..self.pos.raw];
+                            managed = false;
+                        } else {
                             try self.buffer.appendSlice(self.src.data[last..self.pos.raw]);
-                            break :esc try self.buffer.toOwnedSlice();
-                        };
+                            out = try self.buffer.toOwnedSlice();
+                        }
                         break;
                     } else if (self.current.code == '\\') {
                         try self.buffer.appendSlice(self.src.data[last..self.pos.raw]);
@@ -592,7 +612,10 @@ pub fn lexNext(self: *Self) !void {
 
                 try self.output.append(.{
                     .span = .{ start, self.pos },
-                    .token = .{ .string = out },
+                    .token = .{ .string = .{
+                        .str = out,
+                        .managed = managed,
+                    } },
                 });
 
                 self.state = .none;
@@ -619,7 +642,6 @@ pub fn lexNext(self: *Self) !void {
                     } else char = self.current.code;
 
                     try self.advance();
-                    self.buffer.clearRetainingCapacity();
                 }
 
                 try self.output.append(.{
