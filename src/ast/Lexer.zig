@@ -7,8 +7,8 @@ const Allocator = std.mem.Allocator;
 
 const Logger = @import("../log.zig").Logger;
 const value = @import("../vm/value.zig");
-const NumberType = value.BuiltinValue.NumberType;
-const Number = value.BuiltinValue.Number;
+const NumberType = value.NumberType;
+const Number = value.Number;
 
 const utftools = @import("utftools");
 const code_point = @import("code_point");
@@ -45,7 +45,7 @@ pub const Token = union(enum) {
     identifier: []const u8,
 
     pub const String = struct {
-        str: []const u8,
+        buf: []const u8 = "",
         managed: bool = true,
     };
 
@@ -84,7 +84,7 @@ pub const Token = union(enum) {
                 try writer.writeByte('\'');
             },
             .string => |v| {
-                try writer.print("string: \"{s}\"", .{v.str});
+                try writer.print("string: \"{s}\"", .{v.buf});
                 if (v.managed) try writer.print(" (managed)", .{});
             },
             .number => |v| {
@@ -133,7 +133,7 @@ pub const Tokens = std.ArrayList(LocatedToken);
 pub fn deinitTokens(tokens: []LocatedToken, allocator: Allocator) void {
     for (tokens) |token|
         if (token.token == .string and token.token.string.managed)
-            allocator.free(token.token.string.str);
+            allocator.free(token.token.string.buf);
 
     allocator.free(tokens);
 }
@@ -250,7 +250,6 @@ gcd: GenCatData,
 current: CodePoint,
 next: ?CodePoint = null,
 basic: []const u8 = "",
-buffer: std.ArrayList(u8),
 state: State = .none,
 
 logger: Logger(.lexer),
@@ -269,7 +268,6 @@ pub fn init(allocator: Allocator, src: source.Source) !Self {
         .iter = iter,
         .gcd = try GenCatData.init(allocator),
         .current = current orelse undefined,
-        .buffer = std.ArrayList(u8).init(allocator),
         .logger = Logger(.lexer).init(allocator, src),
     };
 }
@@ -278,20 +276,13 @@ pub fn init(allocator: Allocator, src: source.Source) !Self {
 // This should only be run after the output of the lexer is done being used.
 pub fn deinit(self: *Self) void {
     self.gcd.deinit();
-    self.buffer.deinit();
     self.output.deinit();
     self.logger.deinit();
 }
 
 // Clears the lexer, making it available to parse again.
 pub fn clear(self: *Self, free: bool) void {
-    if (free) {
-        self.output.clearAndFree();
-        self.buffer.clearAndFree();
-    } else {
-        self.output.clearRetainingCapacity();
-        self.buffer.clearRetainingCapacity();
-    }
+    if (free) self.output.clearAndFree() else self.output.clearRetainingCapacity();
 
     self.pos = .{};
     self.last = .{};
@@ -480,7 +471,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
         // TODO: use labeled switch
         switch (self.current.code) {
             '0'...'9', '_' => {},
-            'u', 'i', 'f' => if (decimal) {
+            'n', 'i', 'u', 'f' => if (decimal) {
                 explicit_type_char = self.current;
                 break;
             } else if (self.current.code != 'f') return self.fatal("invalid number format.", .{}, number_span),
@@ -523,6 +514,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
                 break :get_type;
             }
         } else new_type = switch (char.code) {
+            'n' => .bigint,
             'i' => .i64,
             'u' => .u64,
             'f' => .f64,
@@ -546,12 +538,14 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
         number_span[1] = explicit_type_span[1];
     }
 
+    const number = if (!err) Number.parse(number_type, number_data, 0, self.allocator) catch num: {
+        try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span);
+        break :num Number{ .u64 = 0 };
+    } else Number{ .u64 = 0 };
+
     try self.output.append(.{
         .span = number_span,
-        .token = .{ .number = Number.parse(number_type, number_data, 0) catch num: {
-            try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span);
-            break :num Number{ .u64 = 0 };
-        } },
+        .token = .{ .number = number },
     });
 
     self.state = .none;
@@ -587,35 +581,33 @@ pub fn lexNext(self: *Self) !void {
                 self.state = .string;
                 const start = self.pos;
                 try self.advance();
+                const inner_start = self.pos.raw;
                 var last = self.pos.raw;
 
-                var out: []const u8 = "";
-                var managed: bool = true;
+                var buffer = std.ArrayList(u8).init(self.allocator);
+                var out = Token.String{};
 
                 while (!self.finished()) : (try self.advance()) {
                     if (self.current.code == '"') {
-                        if (last == start.raw) {
-                            out = self.src.data[last..self.pos.raw];
-                            managed = false;
+                        if (last == inner_start) {
+                            out.buf = self.src.data[last..self.pos.raw];
+                            out.managed = false;
                         } else {
-                            try self.buffer.appendSlice(self.src.data[last..self.pos.raw]);
-                            out = try self.buffer.toOwnedSlice();
+                            try buffer.appendSlice(self.src.data[last..self.pos.raw]);
+                            out.buf = try buffer.toOwnedSlice();
                         }
                         break;
                     } else if (self.current.code == '\\') {
-                        try self.buffer.appendSlice(self.src.data[last..self.pos.raw]);
+                        try buffer.appendSlice(self.src.data[last..self.pos.raw]);
                         const c = try self.parseEscapeSequence('"');
-                        try utftools.writeCodepointToUtf8(c, self.buffer.writer());
-                        last = self.pos.raw + 1;
+                        try utftools.writeCodepointToUtf8(c, buffer.writer());
+                        last = self.peek().offset;
                     }
                 }
 
                 try self.output.append(.{
                     .span = .{ start, self.pos },
-                    .token = .{ .string = .{
-                        .str = out,
-                        .managed = managed,
-                    } },
+                    .token = .{ .string = out },
                 });
 
                 self.state = .none;
@@ -625,23 +617,21 @@ pub fn lexNext(self: *Self) !void {
                 const start = self.pos;
                 var char: ?u21 = null;
 
-                if (self.peek().code == '\'') {
-                    try self.advance();
+                try self.advance();
+                if (self.current.code == '\'') {
                     try self.logger.err("empty characters not allowed.", .{}, .{ start, self.pos });
-                } else if (self.peek().code == '\\') {
-                    try self.advance();
+                } else if (self.current.code == '\\') {
                     char = try self.parseEscapeSequence('\'');
                     try self.advance();
-                } else {
+                } else if (self.peek().code == '\'') {
+                    char = self.current.code;
                     try self.advance();
+                }
 
-                    if (self.peek().code != '\'') {
-                        while (!self.finished() and self.peek().code != '\'') try self.advance();
-                        try self.logger.err("character is too large.", .{}, .{ start, self.pos });
-                        try self.logger.info("strings are defined with double quotes in tungsten.", .{}, null);
-                    } else char = self.current.code;
-
-                    try self.advance();
+                if (self.current.code != '\'') {
+                    while (!self.finished() and self.current.code != '\'') try self.advance();
+                    try self.logger.err("character is too large.", .{}, .{ start, self.pos });
+                    try self.logger.info("strings are defined with double quotes in tungsten.", .{}, null);
                 }
 
                 try self.output.append(.{

@@ -1,4 +1,7 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const allocPrint = std.fmt.allocPrint;
+
 const source = @import("ast/source.zig");
 
 pub fn customLogger(
@@ -28,11 +31,11 @@ const Message = struct {
     }
 };
 
-pub fn Logger(comptime scope: @Type(.EnumLiteral)) type {
+pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
     const inner = std.log.scoped(scope);
 
     return struct {
-        allocator: std.mem.Allocator,
+        allocator: Allocator,
         src: ?source.Source,
         errs: std.ArrayList(Message),
         warns: std.ArrayList(Message),
@@ -41,7 +44,7 @@ pub fn Logger(comptime scope: @Type(.EnumLiteral)) type {
 
         const Self = @This();
 
-        pub fn init(allocator: std.mem.Allocator, src: ?source.Source) Self {
+        pub fn init(allocator: Allocator, src: ?source.Source) Self {
             return .{
                 .allocator = allocator,
                 .src = src,
@@ -66,7 +69,7 @@ pub fn Logger(comptime scope: @Type(.EnumLiteral)) type {
 
         inline fn mkMsg(self: Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !Message {
             return .{
-                .msg = try std.fmt.allocPrint(self.allocator, fmt, args),
+                .msg = try allocPrint(self.allocator, fmt, args),
                 .info = try self.infoString(span),
                 .data = try self.dataString(span),
             };
@@ -100,29 +103,17 @@ pub fn Logger(comptime scope: @Type(.EnumLiteral)) type {
         fn infoString(self: Self, span: ?source.Span) ![]const u8 {
             if (self.src == null and span == null) return self.allocator.alloc(u8, 0);
 
-            var out = std.ArrayList(u8).init(self.allocator);
-            const writer = out.writer();
-            errdefer out.deinit();
+            const name = if (self.src) |src| src.name else null;
 
-            var name = false;
-            if (self.src) |src| {
-                if (src.name) |nm| {
-                    name = true;
-                    try writer.print(" ({s}", .{nm});
-                }
+            if (span) |s| if (name) |n| {
+                return std.fmt.allocPrint(self.allocator, " ({s} | {}:{})", .{ n, s[0].row + 1, s[0].col + 1 });
+            } else {
+                return std.fmt.allocPrint(self.allocator, " ({}:{})", .{ s[0].row + 1, s[0].col + 1 });
+            } else if (name) |n| {
+                return std.fmt.allocPrint(self.allocator, " ({s})", .{n});
             }
 
-            if (span) |s| {
-                if (name) {
-                    try writer.print(", {}:{})", .{ s[0].row + 1, s[0].col + 1 });
-                } else {
-                    try writer.print(" ({}:{})", .{ s[0].row + 1, s[0].col + 1 });
-                }
-            } else if (name) {
-                try out.append(')');
-            }
-
-            return out.toOwnedSlice();
+            unreachable;
         }
 
         fn dataString(self: Self, span: ?source.Span) ![]const u8 {

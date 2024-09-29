@@ -127,9 +127,7 @@ pub const Operand = union(enum) {
             return .{ .literal = e };
         } else if (NonLiteralOperand.fromToken(token)) |e| {
             return .{ .non_literal = e };
-        }
-
-        return null;
+        } else return null;
     }
 };
 

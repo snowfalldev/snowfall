@@ -18,7 +18,7 @@ fn convertDataToUtf8(data: SourceData, allocator: Allocator) !struct { []const u
         .utf16le => |v| utf16le: {
             const wtf8 = unicode.wtf16LeToWtf8Alloc(allocator, v) catch |e| {
                 if (e == Allocator.Error.OutOfMemory) return e;
-                return error.InvalidUtf32;
+                return error.InvalidUtf16Le;
             };
 
             const converted = (try convertMaybeWtf8(wtf8, allocator)) orelse return error.InvalidUtf16Le;
@@ -26,14 +26,14 @@ fn convertDataToUtf8(data: SourceData, allocator: Allocator) !struct { []const u
 
             break :utf16le .{ converted[0], true };
         },
-        .utf32 => |v| utf32: {
+        .utf32le => |v| utf32le: {
             var utf8 = try std.ArrayList(u8).initCapacity(allocator, v.len);
             const writer = utf8.writer();
             for (v) |i| utftools.writeCodepointToUtf8(@truncate(i), writer) catch |e| {
                 if (e == Allocator.Error.OutOfMemory) return e;
-                return error.InvalidUtf32;
+                return error.InvalidUtf32Le;
             };
-            break :utf32 .{ try utf8.toOwnedSlice(), true };
+            break :utf32le .{ try utf8.toOwnedSlice(), true };
         },
     };
 }
@@ -41,7 +41,7 @@ fn convertDataToUtf8(data: SourceData, allocator: Allocator) !struct { []const u
 pub const SourceData = union(enum) {
     utf8: []const u8,
     utf16le: []const u16,
-    utf32: []const u32,
+    utf32le: []const u32,
 };
 
 pub const Source = struct {

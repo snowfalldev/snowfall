@@ -6,4 +6,4 @@ It takes inspiration from several languages I've used, and attempts to combine a
 
 ## ⚠️ Here Be Dragons! ⚠️
 
-Just about nothing interesting works at the moment, and there's no easy way to use the very little amount that is implemented. I would ignore this project entirely for a while if I were you.
+Just about nothing interesting is implemented at the moment, and there's no easy way to use the very little amount that is. I would ignore this project entirely for a while if I were you.

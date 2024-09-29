@@ -12,7 +12,7 @@ pub fn main() !void {
     const allocator = alloc.allocator();
 
     const data =
-        \\pub const test = "haiii";
+        \\pub const test = "haiii 👋";
         \\
         \\pub func testFunc(str: string, num: number) void {
         \\  str[0] = '\x62';
@@ -26,7 +26,7 @@ pub fn main() !void {
         \\  const um = '\n';
         \\  const um2 = 'n';
         \\  std.print('\u{1F480}');
-        \\  std.println(" <- skull\n\u{1F480}\u{1F480} <- oh it's here twice");
+        \\  std.println(" <- skull\n\u{1F480}\u{1F480}💀 <- oh it's here thrice");
         \\  std.println("Hello, world!");
         \\  std.printf("1 + 2 = %d\n", 3);
         \\  std.printf("0.1 * 5.5 = %f\n", 0.55);
