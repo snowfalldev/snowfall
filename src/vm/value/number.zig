@@ -81,11 +81,6 @@ pub const Number = union(NumberType) {
 
     pub fn parse(typ: NumberType, buf: []const u8, base: ?u8, allocator: Allocator) !Number {
         return switch (typ) {
-            .u128 => .{ .u128 = try std.fmt.parseUnsigned(u128, buf, base orelse 0) },
-            .u64  => .{ .u64  = try std.fmt.parseUnsigned(u64,  buf, base orelse 0) },
-            .u32  => .{ .u32  = try std.fmt.parseUnsigned(u32,  buf, base orelse 0) },
-            .u16  => .{ .u16  = try std.fmt.parseUnsigned(u16,  buf, base orelse 0) },
-            .u8   => .{ .u8   = try std.fmt.parseUnsigned(u8,   buf, base orelse 0) },
             // zig fmt: on
             .bigint => .{ .bigint = out: {
                 const limbs_len = big.int.calcSetStringLimbsBufferLen(base orelse 10, buf.len);
@@ -99,15 +94,20 @@ pub const Number = union(NumberType) {
                 break :out out.toManaged(allocator);
             } },
             // zig fmt: off
-            .i128 => .{ .i128 = try std.fmt.parseInt(  i128, buf, base orelse 0) },
-            .i64  => .{ .i64  = try std.fmt.parseInt(  i64,  buf, base orelse 0) },
-            .i32  => .{ .i32  = try std.fmt.parseInt(  i32,  buf, base orelse 0) },
-            .i16  => .{ .i16  = try std.fmt.parseInt(  i16,  buf, base orelse 0) },
-            .i8   => .{ .i8   = try std.fmt.parseInt(  i8,   buf, base orelse 0) },
-            .f128 => .{ .f128 = try std.fmt.parseFloat(f128, buf) },
-            .f64  => .{ .f64  = try std.fmt.parseFloat(f64,  buf) },
-            .f32  => .{ .f32  = try std.fmt.parseFloat(f32,  buf) },
-            .f16  => .{ .f16  = try std.fmt.parseFloat(f16,  buf) },
+            .i128 => .{ .i128 = try std.fmt.parseInt(     i128, buf, base orelse 0) },
+            .i64  => .{ .i64  = try std.fmt.parseInt(     i64,  buf, base orelse 0) },
+            .i32  => .{ .i32  = try std.fmt.parseInt(     i32,  buf, base orelse 0) },
+            .i16  => .{ .i16  = try std.fmt.parseInt(     i16,  buf, base orelse 0) },
+            .i8   => .{ .i8   = try std.fmt.parseInt(     i8,   buf, base orelse 0) },
+            .u128 => .{ .u128 = try std.fmt.parseUnsigned(u128, buf, base orelse 0) },
+            .u64  => .{ .u64  = try std.fmt.parseUnsigned(u64,  buf, base orelse 0) },
+            .u32  => .{ .u32  = try std.fmt.parseUnsigned(u32,  buf, base orelse 0) },
+            .u16  => .{ .u16  = try std.fmt.parseUnsigned(u16,  buf, base orelse 0) },
+            .u8   => .{ .u8   = try std.fmt.parseUnsigned(u8,   buf, base orelse 0) },
+            .f128 => .{ .f128 = try std.fmt.parseFloat(   f128, buf) },
+            .f64  => .{ .f64  = try std.fmt.parseFloat(   f64,  buf) },
+            .f32  => .{ .f32  = try std.fmt.parseFloat(   f32,  buf) },
+            .f16  => .{ .f16  = try std.fmt.parseFloat(   f16,  buf) },
         };
     }
 
@@ -236,38 +236,26 @@ pub const Number = union(NumberType) {
         };
     }
 
-    pub inline fn write(self: Number, writer: anytype) !void {
+    pub inline fn write(self: Number, tagged: bool, writer: anytype) !void {
+        if (tagged) try writer.print("{s}: ", .{@tagName(self)});
         return switch (self) {
-            .u128 => |v| writer.print("u128: {}", .{v}),
-            .u64  => |v| writer.print("u64: {}",  .{v}),
-            .u32  => |v| writer.print("u32: {}",  .{v}),
-            .u16  => |v| writer.print("u16: {}",  .{v}),
-            .u8   => |v| writer.print("u8: {}",   .{v}),
             // zig fmt: on
-            .bigint => |v| {
+            .bigint => |v| err: {
                 try writer.writeAll("bigint: ");
                 const str = try v.toString(v.allocator, 10, .upper);
-                try writer.writeAll(str);
-                v.allocator.free(str);
+                defer v.allocator.free(str);
+                break :err writer.writeAll(str);
             },
             // zig fmt: off
-            .i128 => |v| writer.print("i128: {}", .{v}),
-            .i64  => |v| writer.print("i64: {}",  .{v}),
-            .i32  => |v| writer.print("i32: {}",  .{v}),
-            .i16  => |v| writer.print("i16: {}",  .{v}),
-            .i8   => |v| writer.print("i8: {}",   .{v}),
-            .f128 => |v| writer.print("f128: {}", .{v}),
-            .f64  => |v| writer.print("f64: {}",  .{v}),
-            .f32  => |v| writer.print("f32: {}",  .{v}),
-            .f16  => |v| writer.print("f16: {}",  .{v}),
+            inline else => |v| writer.print("{}", .{v}),
         };
     }
 
     // zig fmt: on
 
-    pub inline fn toString(self: Number, allocator: Allocator) ![]const u8 {
+    pub inline fn toString(self: Number, tagged: bool, allocator: Allocator) ![]const u8 {
         var arraylist = std.ArrayList(u8).init(allocator);
-        try self.write(arraylist.writer());
+        try self.write(tagged, arraylist.writer());
         return arraylist.toOwnedSlice();
     }
 };

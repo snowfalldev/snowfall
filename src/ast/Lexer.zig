@@ -89,7 +89,7 @@ pub const Token = union(enum) {
             },
             .number => |v| {
                 try writer.writeAll("number: { ");
-                try v.write(writer);
+                try v.write(true, writer);
                 try writer.writeAll(" }");
             },
 
