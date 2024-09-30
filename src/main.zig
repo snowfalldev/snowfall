@@ -31,7 +31,7 @@ pub fn main() !void {
         \\  std.printf("1 + 2 = %d\n", 3);
         \\  std.printf("0.1 * 5.5 = %f\n", 0.55);
         \\  std.printf("3 + 1 = %d\n", 4u32);
-        \\  std.printf("0.2 * 3.3 = %f\n", 0.33f16);
+        \\  std.printf("0.2 * 3.3 = %f\n", 0.66f16);
         \\  @panic("welp");
         \\}
     ;

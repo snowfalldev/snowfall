@@ -454,6 +454,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
     const obase = numberBaseCharToBase(self.peek().code);
     const base = if (self.current.code == '0') obase orelse 10 else 10;
     var number_type = NumberType.u64;
+    var exponent_reached = false;
     var explicit_type_char: ?CodePoint = null;
 
     if (explicit_sign_number) {
@@ -474,10 +475,18 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
                 explicit_type_char = self.current;
                 break;
             } else return self.fatal("invalid number format.", .{}, number_span),
-            'a'...'d', 'A'...'F' => if (base == 10) return self.fatal("invalid number format.", .{}, number_span),
+            'a'...'d', 'A'...'D', 'F' => if (base != 16) return self.fatal("hex char in base {} number.", .{base}, number_span),
+            'e', 'E' => switch (base) {
+                16 => {},
+                10 => if (number_type == .f64) {
+                    if (!exponent_reached) {
+                        exponent_reached = true;
+                    } else return self.fatal("hex char in float (past possible exponent).", .{}, number_span);
+                } else return self.fatal("hex char in base 10 number (not known to be float yet).", .{}, number_span),
+                else => return self.fatal("hex char in base {} number.", .{base}, number_span),
+            },
             '.' => {
-                if (base != 10) return self.fatal("invalid number format.", .{}, number_span);
-                if (number_type == NumberType.f64) break;
+                if (number_type == NumberType.f64 or base != 10) break;
                 number_type = NumberType.f64;
             },
             else => return self.fatal("invalid number format.", .{}, number_span),
