@@ -79,31 +79,27 @@ pub const Number = union(NumberType) {
     f32:    f32,
     f16:    f16,
 
-    pub fn parse(typ: NumberType, buf: []const u8, base: ?u8, allocator: Allocator) !Number {
+    pub fn parse(typ: NumberType, buf: []const u8, base: u8, allocator: Allocator) !Number {
         return switch (typ) {
             // zig fmt: on
             .bigint => .{ .bigint = out: {
-                const limbs_len = big.int.calcSetStringLimbsBufferLen(base orelse 10, buf.len);
+                const limbs_len = big.int.calcSetStringLimbsBufferLen(base, buf.len);
                 const limbs = try allocator.alloc(big.Limb, limbs_len);
-                var out = big.int.Mutable{
-                    .limbs = limbs,
-                    .len = 0,
-                    .positive = true,
-                };
-                try out.setString(base orelse 10, buf, limbs, allocator);
+                var out = big.int.Mutable{ .limbs = limbs, .len = 0, .positive = true };
+                try out.setString(base, buf, limbs, allocator);
                 break :out out.toManaged(allocator);
             } },
             // zig fmt: off
-            .i128 => .{ .i128 = try std.fmt.parseInt(     i128, buf, base orelse 0) },
-            .i64  => .{ .i64  = try std.fmt.parseInt(     i64,  buf, base orelse 0) },
-            .i32  => .{ .i32  = try std.fmt.parseInt(     i32,  buf, base orelse 0) },
-            .i16  => .{ .i16  = try std.fmt.parseInt(     i16,  buf, base orelse 0) },
-            .i8   => .{ .i8   = try std.fmt.parseInt(     i8,   buf, base orelse 0) },
-            .u128 => .{ .u128 = try std.fmt.parseUnsigned(u128, buf, base orelse 0) },
-            .u64  => .{ .u64  = try std.fmt.parseUnsigned(u64,  buf, base orelse 0) },
-            .u32  => .{ .u32  = try std.fmt.parseUnsigned(u32,  buf, base orelse 0) },
-            .u16  => .{ .u16  = try std.fmt.parseUnsigned(u16,  buf, base orelse 0) },
-            .u8   => .{ .u8   = try std.fmt.parseUnsigned(u8,   buf, base orelse 0) },
+            .i128 => .{ .i128 = try std.fmt.parseInt(     i128, buf, base) },
+            .i64  => .{ .i64  = try std.fmt.parseInt(     i64,  buf, base) },
+            .i32  => .{ .i32  = try std.fmt.parseInt(     i32,  buf, base) },
+            .i16  => .{ .i16  = try std.fmt.parseInt(     i16,  buf, base) },
+            .i8   => .{ .i8   = try std.fmt.parseInt(     i8,   buf, base) },
+            .u128 => .{ .u128 = try std.fmt.parseUnsigned(u128, buf, base) },
+            .u64  => .{ .u64  = try std.fmt.parseUnsigned(u64,  buf, base) },
+            .u32  => .{ .u32  = try std.fmt.parseUnsigned(u32,  buf, base) },
+            .u16  => .{ .u16  = try std.fmt.parseUnsigned(u16,  buf, base) },
+            .u8   => .{ .u8   = try std.fmt.parseUnsigned(u8,   buf, base) },
             .f128 => .{ .f128 = try std.fmt.parseFloat(   f128, buf) },
             .f64  => .{ .f64  = try std.fmt.parseFloat(   f64,  buf) },
             .f32  => .{ .f32  = try std.fmt.parseFloat(   f32,  buf) },
@@ -241,7 +237,6 @@ pub const Number = union(NumberType) {
         return switch (self) {
             // zig fmt: on
             .bigint => |v| err: {
-                try writer.writeAll("bigint: ");
                 const str = try v.toString(v.allocator, 10, .upper);
                 defer v.allocator.free(str);
                 break :err writer.writeAll(str);
@@ -259,3 +254,46 @@ pub const Number = union(NumberType) {
         return arraylist.toOwnedSlice();
     }
 };
+
+// Maximum values for uint types.
+pub const uint_max = std.ComptimeStringMap(u128, .{
+    .{ "u128", std.math.maxInt(u128) },
+    .{ "u64", std.math.maxInt(u64) },
+    .{ "u32", std.math.maxInt(u32) },
+    .{ "u16", std.math.maxInt(u16) },
+    .{ "u8", std.math.maxInt(u8) },
+});
+
+// Minimum values for int types.
+pub const int_min = std.ComptimeStringMap(i128, .{
+    .{ "i128", std.math.minInt(i128) },
+    .{ "i64", std.math.minInt(i64) },
+    .{ "i32", std.math.minInt(i32) },
+    .{ "i16", std.math.minInt(i16) },
+    .{ "i8", std.math.minInt(i8) },
+});
+
+// Maximum values for int types.
+pub const int_max = std.ComptimeStringMap(i128, .{
+    .{ "i128", std.math.maxInt(i128) },
+    .{ "i64", std.math.maxInt(i64) },
+    .{ "i32", std.math.maxInt(i32) },
+    .{ "i16", std.math.maxInt(i16) },
+    .{ "i8", std.math.maxInt(i8) },
+});
+
+// Minimum values for float types.
+pub const float_min = std.ComptimeStringMap(f128, .{
+    .{ "f128", std.math.floatMin(f128) },
+    .{ "f64", std.math.floatMin(f64) },
+    .{ "f32", std.math.floatMin(f32) },
+    .{ "f16", std.math.floatMin(f16) },
+});
+
+// Maximum values for float types.
+pub const float_max = std.ComptimeStringMap(f128, .{
+    .{ "f128", std.math.floatMax(f128) },
+    .{ "f64", std.math.floatMax(f64) },
+    .{ "f32", std.math.floatMax(f32) },
+    .{ "f16", std.math.floatMax(f16) },
+});

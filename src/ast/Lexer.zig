@@ -139,18 +139,12 @@ pub fn deinitTokens(tokens: []LocatedToken, allocator: Allocator) void {
 }
 
 // Non-decimal representation characters in numbers.
-inline fn isNonDigitNumberChar(char: u21) bool {
+inline fn numberBaseCharToBase(char: u21) ?u8 {
     return switch (char) {
-        'x',
-        'X', // hexadecimal
-        'b',
-        'B', // binary
-        'o',
-        'O', // octal
-        'e',
-        'E', // exponent
-        => true,
-        else => false,
+        'b', 'B' => 2,
+        'o', 'O' => 8,
+        'x', 'X' => 16,
+        else => null,
     };
 }
 
@@ -457,7 +451,8 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
     var number_span = Span{ self.pos, self.pos };
     self.state = .number;
 
-    const decimal = !(self.current.code == '0' and isNonDigitNumberChar(self.peek().code));
+    const obase = numberBaseCharToBase(self.peek().code);
+    const base = if (self.current.code == '0') obase orelse 10 else 10;
     var number_type = NumberType.u64;
     var explicit_type_char: ?CodePoint = null;
 
@@ -471,13 +466,17 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
         // TODO: use labeled switch
         switch (self.current.code) {
             '0'...'9', '_' => {},
-            'n', 'i', 'u', 'f' => if (decimal) {
+            'n', 'i', 'u' => {
                 explicit_type_char = self.current;
                 break;
-            } else if (self.current.code != 'f') return self.fatal("invalid number format.", .{}, number_span),
-            'a'...'d', 'A'...'F' => if (decimal) return self.fatal("invalid number format.", .{}, number_span),
+            },
+            'f' => if (base == 10) {
+                explicit_type_char = self.current;
+                break;
+            } else return self.fatal("invalid number format.", .{}, number_span),
+            'a'...'d', 'A'...'F' => if (base == 10) return self.fatal("invalid number format.", .{}, number_span),
             '.' => {
-                if (!decimal) return self.fatal("invalid number format.", .{}, number_span);
+                if (base != 10) return self.fatal("invalid number format.", .{}, number_span);
                 if (number_type == NumberType.f64) break;
                 number_type = NumberType.f64;
             },
@@ -538,7 +537,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
         number_span[1] = explicit_type_span[1];
     }
 
-    const number = if (!err) Number.parse(number_type, number_data, 0, self.allocator) catch num: {
+    const number = if (!err) Number.parse(number_type, number_data, base, self.allocator) catch num: {
         try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span);
         break :num Number{ .u64 = 0 };
     } else Number{ .u64 = 0 };
