@@ -12,8 +12,12 @@ pub fn main() !void {
     const allocator = alloc.allocator();
 
     const data =
+        \\//! this is top-level doc comment
+        \\
         \\pub const test = "haiii 👋";
         \\
+        \\// this is a regular comment, doesn't get tokenized
+        \\/// this is a doc comment, gets tokenized and attached to the function below
         \\pub func testFunc(str: string, num: number) void {
         \\  str[0] = '\x62';
         \\  var a = +43;
@@ -21,6 +25,14 @@ pub fn main() !void {
         \\  std.printf("%s %d\n", str, a);
         \\}
         \\
+        \\/*
+        \\bigger comment
+        \\look it's multiline waow
+        \\*/
+        \\/**
+        \\bigger doc comment
+        \\im multiline too!!
+        \\*/
         \\pub func main() void {
         \\  testFunc(test, -1);
         \\  const um = '\n';
@@ -29,9 +41,9 @@ pub fn main() !void {
         \\  std.println(" <- skull\n\u{1F480}\u{1F480}💀 <- oh it's here thrice");
         \\  std.println("Hello, world!");
         \\  std.printf("1 + 2 = %d\n", 3);
-        \\  std.printf("0.1 * 5.5 = %f\n", 0.55);
+        \\  std.printf("0.1 * 5.5 = %d\n", 0.55);
         \\  std.printf("3 + 1 = %d\n", 4u32);
-        \\  std.printf("0.2 * 3.3 = %f\n", 0.66f16);
+        \\  std.printf("0.2 * 3.3 = %d\n", 0.66f16);
         \\  @panic("welp");
         \\}
     ;

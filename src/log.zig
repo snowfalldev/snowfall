@@ -3,6 +3,9 @@ const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
 
 const source = @import("ast/source.zig");
+const Source = source.Source;
+const Position = source.Position;
+const Span = source.Span;
 
 pub fn customLogger(
     comptime level: std.log.Level,
@@ -19,18 +22,6 @@ pub fn customLogger(
     nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
 }
 
-const Message = struct {
-    msg: []const u8,
-    info: []const u8,
-    data: []const u8,
-
-    pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
-        allocator.free(self.msg);
-        allocator.free(self.info);
-        allocator.free(self.data);
-    }
-};
-
 pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
     const inner = std.log.scoped(scope);
 
@@ -44,7 +35,19 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
 
         const Self = @This();
 
-        pub fn init(allocator: Allocator, src: ?source.Source) Self {
+        const Message = struct {
+            msg: []const u8,
+            info: []const u8,
+            data: []const u8,
+
+            pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
+                allocator.free(self.msg);
+                allocator.free(self.info);
+                allocator.free(self.data);
+            }
+        };
+
+        pub fn init(allocator: Allocator, src: ?Source) Self {
             return .{
                 .allocator = allocator,
                 .src = src,
@@ -67,41 +70,41 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
             self.debugs.deinit();
         }
 
-        inline fn mkMsg(self: Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !Message {
+        inline fn mkMsg(self: Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Position) !Message {
             return .{
                 .msg = try allocPrint(self.allocator, fmt, args),
-                .info = try self.infoString(span),
-                .data = try self.dataString(span),
+                .info = try self.infoString(span, hi),
+                .data = try self.dataString(span, hi),
             };
         }
 
-        pub fn err(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !void {
-            @setCold(true);
-            const msg = try self.mkMsg(fmt, args, span);
+        pub fn err(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Position) !void {
+            @branchHint(.cold);
+            const msg = try self.mkMsg(fmt, args, span, hi);
             try self.errs.append(msg);
             inner.err("{s}{s}\n{s}", msg);
         }
 
-        pub inline fn warn(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !void {
-            const msg = try self.mkMsg(fmt, args, span);
+        pub inline fn warn(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Position) !void {
+            const msg = try self.mkMsg(fmt, args, span, hi);
             try self.warns.append(msg);
             inner.warn("{s}{s}\n{s}", msg);
         }
 
-        pub inline fn info(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !void {
-            const msg = try self.mkMsg(fmt, args, span);
+        pub inline fn info(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Position) !void {
+            const msg = try self.mkMsg(fmt, args, span, hi);
             try self.infos.append(msg);
             inner.info("{s}{s}\n{s}", msg);
         }
 
-        pub inline fn debug(self: *Self, comptime fmt: []const u8, args: anytype, span: ?source.Span) !void {
-            const msg = try self.mkMsg(fmt, args, span);
+        pub inline fn debug(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Position) !void {
+            const msg = try self.mkMsg(fmt, args, span, hi);
             try self.debugs.append(msg);
             inner.debug("{s}{s}\n{s}", msg);
         }
 
-        fn infoString(self: Self, span: ?source.Span) ![]const u8 {
-            if (self.src == null and span == null) return self.allocator.alloc(u8, 0);
+        fn infoString(self: Self, span: ?Span, hi: ?Position) ![]const u8 {
+            if (self.src == null and span == null and hi == null) return self.allocator.alloc(u8, 0);
 
             const name = if (self.src) |src| src.name else null;
 
@@ -116,7 +119,7 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
             unreachable;
         }
 
-        fn dataString(self: Self, span: ?source.Span) ![]const u8 {
+        fn dataString(self: Self, span: ?Span, hi: ?Position) ![]const u8 {
             if (self.src == null or span == null) return self.allocator.alloc(u8, 0);
             const s = span.?;
             const d = self.src.?.data;
@@ -133,6 +136,7 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
             var i: usize = 0;
             while (i < s[0].col) : (i += 1) try out.append(' ');
             if (s[1].col > s[0].col) {
+                if (hi) |h| while (i < h.col) : (i += 1) try out.append('~');
                 try out.append('^');
                 i += 1;
                 while (i < s[1].col + 1) : (i += 1) try out.append('~');

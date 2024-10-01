@@ -43,10 +43,16 @@ pub const Token = union(enum) {
     keyword: []const u8,
     builtin_type: []const u8,
     identifier: []const u8,
+    doc_comment: DocComment,
 
     pub const String = struct {
         buf: []const u8 = "",
         managed: bool = true,
+    };
+
+    pub const DocComment = struct {
+        buf: []const u8 = "",
+        top_level: bool = false,
     };
 
     // Convert from a string representing a basic token (if possible).
@@ -75,8 +81,8 @@ pub const Token = union(enum) {
     // Write a token to a writer.
     pub fn write(self: Token, writer: anytype) !void {
         return switch (self) {
-            .null => try writer.print("null", .{}),
-            .undefined => try writer.print("undefined", .{}),
+            .null => try writer.writeAll("null"),
+            .undefined => try writer.writeAll("undefined"),
             .bool => |v| try writer.print("bool: {}", .{v}),
             .char => |v| {
                 try writer.writeAll("char: '");
@@ -85,7 +91,7 @@ pub const Token = union(enum) {
             },
             .string => |v| {
                 try writer.print("string: \"{s}\"", .{v.buf});
-                if (v.managed) try writer.print(" (managed)", .{});
+                if (v.managed) try writer.writeAll(" (managed)");
             },
             .number => |v| {
                 try writer.writeAll("number: { ");
@@ -100,6 +106,10 @@ pub const Token = union(enum) {
             .identifier => |v| try writer.print("identifier: {s}", .{v}),
             .builtin_type => |v| try writer.print("built-in type: {s}", .{v}),
             .keyword => |v| try writer.print("keyword: {s}", .{v}),
+            .doc_comment => |v| {
+                try writer.print("doc comment: \"{s}\"", .{v.buf});
+                if (v.top_level) try writer.writeAll(" (top-level)");
+            },
         };
     }
 
@@ -368,18 +378,25 @@ pub inline fn finished(self: Self) bool {
     return (self.pos.raw >= self.src.data.len or self.failed);
 }
 
+inline fn isLineSeparator(char: u21) bool {
+    // keep in sync with Zl Unicode category
+    return char == '\n' or char == 0x2028;
+}
+
 inline fn isSeparator(self: *Self, char: u21) bool {
-    return char == '\n' or (self.state == .none and self.gcd.isSeparator(self.current.code));
+    return isLineSeparator(char) or (self.state == .none and self.gcd.isSeparator(self.current.code));
+}
+
+inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Position) !void {
+    try self.logger.err(fmt, args, span, hi);
+    self.failed = true;
 }
 
 inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
-    const esc_seq_start = self.pos;
-
     return switch (self.peek().code) {
         'n', 'r', 't', '\\', exit => {
-            const char = self.peek().code;
             try self.advance();
-            return switch (char) {
+            return switch (self.current.code) {
                 'n' => '\n',
                 'r' => '\r',
                 't' => '\t',
@@ -392,6 +409,7 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
             if (self.src.data.len > self.pos.raw + 3) {
                 try self.advance(); // Advance past '\'.
                 try self.advance(); // Advance past 'x'.
+                const hex_start = self.pos;
                 const chars: [2]u8 = .{
                     @truncate(self.current.code),
                     @truncate(self.peek().code),
@@ -399,17 +417,20 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                 try self.advance();
 
                 return parseUnsigned(u8, &chars, 16) catch {
-                    try self.logger.err("bad hexadecimal number.", .{}, .{ esc_seq_start, self.pos }); // Overflow is unreachable.
+                    try self.logger.err("bad hexadecimal number.", .{}, .{ hex_start, self.pos }, null); // Overflow is unreachable.
                     return 0xFFFD;
                 };
             } else {
-                try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos });
+                try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos }, null);
                 return 0xFFFD;
             }
         },
         'u' => {
+            const esc_seq_start = self.pos;
             try self.advance(); // Advance past '\'.
             try self.advance(); // Advance past 'u'.
+
+            var fail_pos = Position{};
 
             if (self.current.code == '{') parse: {
                 try self.advance(); // Advance past '{'.
@@ -419,10 +440,18 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
 
                 while (!self.finished()) : (try self.advance()) {
                     if (self.current.code == '}') break;
-                    if (!isHexadecimalChar(self.current.code) or self.isSeparator(self.peek().code)) break :parse;
+
+                    if (!isHexadecimalChar(self.current.code)) {
+                        fail_pos = self.pos;
+                        break :parse;
+                    } else if (self.isSeparator(self.peek().code)) {
+                        fail_pos = self.pos.next();
+                        break :parse;
+                    }
+
                     if (idx == 0) {
                         while (!self.finished() and self.current.code != '}') try self.advance();
-                        try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos });
+                        try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos }, null);
                         return 0xFFFD;
                     }
                     idx -%= 1;
@@ -430,29 +459,36 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
 
                 const char = parseUnsigned(u24, self.src.data[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
                 if (char > 0x10FFFF) {
-                    try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos });
+                    try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos }, null);
                     return 0xFFFD;
                 } else return @truncate(char);
             }
 
             while (!self.finished() and isHexadecimalChar(self.peek().code)) try self.advance();
             try self.advance();
-            try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, self.pos });
+            try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, fail_pos }, fail_pos);
             return 0xFFFD;
         },
         else => {
-            try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos });
+            try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos }, null);
             return 0xFFFD;
         },
     };
 }
 
 inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
-    var number_span = Span{ self.pos, self.pos };
     self.state = .number;
+    var number_span = Span{ self.pos, self.pos };
 
     const obase = numberBaseCharToBase(self.peek().code);
     const base = if (self.current.code == '0') obase orelse 10 else 10;
+    if (base != 10) {
+        try self.advance();
+        try self.advance();
+    }
+
+    const after_base = self.pos.raw;
+
     var number_type = NumberType.u64;
     var exponent_reached = false;
     var explicit_type_char: ?CodePoint = null;
@@ -464,32 +500,29 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
 
     while (!self.finished()) : (try self.advance()) {
         number_span[1] = self.pos;
-        // TODO: use labeled switch
-        switch (self.current.code) {
+        num: switch (self.current.code) {
             '0'...'9', '_' => {},
+            'f' => continue :num if (base == 10) 'i' else 'F',
             'n', 'i', 'u' => {
                 explicit_type_char = self.current;
                 break;
             },
-            'f' => if (base == 10) {
-                explicit_type_char = self.current;
-                break;
-            } else return self.fatal("invalid number format.", .{}, number_span),
-            'a'...'d', 'A'...'D', 'F' => if (base != 16) return self.fatal("hex char in base {} number.", .{base}, number_span),
+            'a'...'d', 'A'...'D', 'F' => if (base != 16)
+                return self.fatal("hex char in base {} number.", .{base}, number_span, self.pos),
             'e', 'E' => switch (base) {
                 16 => {},
                 10 => if (number_type == .f64) {
                     if (!exponent_reached) {
                         exponent_reached = true;
-                    } else return self.fatal("hex char in float (past possible exponent).", .{}, number_span);
-                } else return self.fatal("hex char in base 10 number (not known to be float yet).", .{}, number_span),
-                else => return self.fatal("hex char in base {} number.", .{base}, number_span),
+                    } else return self.fatal("hex char in float exponent.", .{}, number_span, self.pos);
+                } else return self.fatal("hex char in base 10 number (not known to be float yet).", .{}, number_span, self.pos),
+                else => return self.fatal("hex char in base {} number.", .{base}, number_span, self.pos),
             },
             '.' => {
                 if (number_type == NumberType.f64 or base != 10) break;
                 number_type = NumberType.f64;
             },
-            else => return self.fatal("invalid number format.", .{}, number_span),
+            else => return self.fatal("unexpected character in number.", .{}, number_span, self.pos),
         }
 
         if (isSeparatingSymbol(self.peek().code) or self.isSeparator(self.peek().code)) {
@@ -498,7 +531,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
         }
     }
 
-    const number_data = self.src.data[number_span[0].raw..self.pos.raw];
+    const number_data = self.src.data[after_base..self.pos.raw];
 
     var explicit_type_span = Span{ self.pos, self.pos };
     var type_string: []const u8 = @tagName(number_type);
@@ -517,7 +550,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
         if (type_string.len > 1) {
             new_type = NumberType.string_map.get(type_string);
             if (new_type == null) {
-                try self.logger.err("unknown type.", .{}, explicit_type_span);
+                try self.logger.err("unknown type.", .{}, explicit_type_span, null);
                 err = true;
                 break :get_type;
             }
@@ -529,25 +562,26 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
             else => unreachable,
         };
 
-        if (char.code == 'u') {
+        number_span[1] = explicit_type_span[1];
+
+        if ((char.code == 'i' or char.code == 'n') and number_type == .f64) {
+            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, number_span, explicit_type_span[0]);
+            err = true;
+        } else if (char.code == 'u') {
             if (number_type == .i64 and number_data[0] == '-') {
-                try self.logger.err("unsigned integers cannot be negative.", .{}, explicit_type_span);
+                try self.logger.err("unsigned integers cannot be negative.", .{}, number_span, explicit_type_span[0]);
                 err = true;
             } else if (number_type == .f64) {
-                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, explicit_type_span);
+                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, number_span, explicit_type_span[0]);
                 err = true;
             }
-        } else if (char.code == 'i' and number_type == .f64) {
-            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, explicit_type_span);
-            err = true;
         }
 
         number_type = new_type.?;
-        number_span[1] = explicit_type_span[1];
     }
 
     const number = if (!err) Number.parse(number_type, number_data, base, self.allocator) catch num: {
-        try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span);
+        try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span, explicit_type_span[0]);
         break :num Number{ .u64 = 0 };
     } else Number{ .u64 = 0 };
 
@@ -557,11 +591,6 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
     });
 
     self.state = .none;
-}
-
-inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span) !void {
-    try self.logger.err(fmt, args, span);
-    self.failed = true;
 }
 
 // Lex characters into the next token(s).
@@ -577,7 +606,7 @@ pub fn lexNext(self: *Self) !void {
         // Explicitly +/- numbers; we must ensure the last token was not an expression.
         if (explicit_sign_number) {
             var last_token = self.getLastToken();
-            if (last_token == null) return self.fatal("invalid syntax.", .{}, .{ self.pos, self.pos });
+            if (last_token == null) return self.fatal("invalid syntax.", .{}, .{ self.pos, self.pos }, null);
             explicit_sign_number = explicit_sign_number and !last_token.?.token.isExpression();
         }
 
@@ -627,7 +656,7 @@ pub fn lexNext(self: *Self) !void {
 
                 try self.advance();
                 if (self.current.code == '\'') {
-                    try self.logger.err("empty characters not allowed.", .{}, .{ start, self.pos });
+                    try self.logger.err("empty characters not allowed.", .{}, .{ start, self.pos }, null);
                 } else if (self.current.code == '\\') {
                     char = try self.parseEscapeSequence('\'');
                     try self.advance();
@@ -638,8 +667,8 @@ pub fn lexNext(self: *Self) !void {
 
                 if (self.current.code != '\'') {
                     while (!self.finished() and self.current.code != '\'') try self.advance();
-                    try self.logger.err("character is too large.", .{}, .{ start, self.pos });
-                    try self.logger.info("strings are defined with double quotes in tungsten.", .{}, null);
+                    try self.logger.err("character is too large.", .{}, .{ start, self.pos }, null);
+                    try self.logger.info("strings are defined with double quotes in tungsten.", .{}, null, null);
                 }
 
                 try self.output.append(.{
@@ -650,17 +679,50 @@ pub fn lexNext(self: *Self) !void {
                 self.state = .none;
             },
             // Division or comment.
-            '/' => switch (self.peek().code) {
-                // Single-line comment.
-                '/' => while (self.peek().code != '\n') try self.advance(),
-                // Multi-line comment.
-                '*' => {
-                    while (!(self.current.code == '*' and self.peek().code == '/')) try self.advance();
-                    try self.advance();
-                },
-                // Symbol.
-                else => try self.addBasicToken(true),
-            },
+            '/' => if (self.peek().code == '/' or self.peek().code == '*') {
+                var span = Span{ self.pos, self.pos };
+                var start = self.pos;
+                try self.advance();
+                var doc = false;
+                var out = Token.DocComment{};
+
+                switch (self.current.code) {
+                    // Single-line comment.
+                    '/' => {
+                        if (isLineSeparator(self.peek().code)) continue;
+                        try self.advance();
+                        doc = self.current.code == '/';
+                        out.top_level = self.current.code == '!';
+                        if (isLineSeparator(self.peek().code)) continue;
+                        if (doc or out.top_level) try self.advance();
+
+                        start = self.pos;
+                        while (!isLineSeparator(self.peek().code)) try self.advance();
+                        span[1] = self.pos;
+                    },
+                    // Multi-line comment.
+                    '*' => {
+                        try self.advance();
+                        doc = self.current.code == '*';
+                        if (doc) try self.advance();
+
+                        start = self.pos;
+                        while (!(self.current.code == '*' and self.peek().code == '/')) : (try self.advance()) span[1] = self.pos;
+                        try self.advance();
+                    },
+                    else => unreachable,
+                }
+
+                if (out.top_level and (self.output.items.len != 0 or self.basic.len != 0))
+                    return self.fatal("top-level doc comment must be at the start of the file.", .{}, span, null);
+
+                out.buf = self.src.data[start.raw .. span[1].raw + 1];
+
+                if (doc or out.top_level) try self.output.append(.{
+                    .span = span,
+                    .token = .{ .doc_comment = out },
+                });
+            } else try self.addBasicToken(true), // Symbol.
             else => if (!isSymbol(self.current.code)) {
                 self.basic.len +%= self.current.len;
             } else try self.addBasicToken(true), // Symbol.

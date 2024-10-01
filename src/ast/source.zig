@@ -74,6 +74,15 @@ pub const Position = struct {
     raw: u32 = 0,
     row: u32 = 0,
     col: u32 = 0,
+
+    // Returns the position after this one.
+    pub inline fn next(pos: Position) Position {
+        return .{
+            .raw = pos.raw + 1,
+            .row = pos.row,
+            .col = pos.col + 1,
+        };
+    }
 };
 
 pub const Span = struct { Position = .{}, Position = .{} };
