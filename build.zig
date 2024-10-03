@@ -13,6 +13,14 @@ pub fn build(b: *std.Build) anyerror!void {
     const utftools = b.dependency("utftools", .{});
     const utftools_mod = utftools.module("utftools");
 
+    const jemalloc = b.dependency("jemalloc", .{});
+    const jemalloc_mod = jemalloc.module("jemalloc");
+
+    const static_map = b.dependency("static-map", .{});
+    const static_map_mod = static_map.module("static-map");
+    const comptime_hash_map = b.dependency("comptime_hash_map", .{});
+    const comptime_hash_map_mod = comptime_hash_map.module("comptime_hash_map");
+
     // LIBRARY
 
     const lib = b.addStaticLibrary(.{
@@ -26,6 +34,13 @@ pub fn build(b: *std.Build) anyerror!void {
     lib.root_module.addImport("code_point", code_point_mod);
     lib.root_module.addImport("GenCatData", gencatdata_mod);
     lib.root_module.addImport("utftools", utftools_mod);
+
+    lib.root_module.addImport("jemalloc", jemalloc_mod);
+    lib.linkLibC();
+
+    lib.root_module.addImport("static-map", static_map_mod);
+    lib.root_module.addImport("chm", comptime_hash_map_mod);
+
     b.installArtifact(lib);
 
     // RUNTIME
@@ -41,6 +56,13 @@ pub fn build(b: *std.Build) anyerror!void {
     exe.root_module.addImport("code_point", code_point_mod);
     exe.root_module.addImport("GenCatData", gencatdata_mod);
     exe.root_module.addImport("utftools", utftools_mod);
+
+    exe.root_module.addImport("jemalloc", jemalloc_mod);
+    exe.linkLibC();
+
+    exe.root_module.addImport("static-map", static_map_mod);
+    exe.root_module.addImport("chm", comptime_hash_map_mod);
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -60,6 +82,13 @@ pub fn build(b: *std.Build) anyerror!void {
     tests.root_module.addImport("code_point", code_point_mod);
     tests.root_module.addImport("GenCatData", gencatdata_mod);
     tests.root_module.addImport("utftools", utftools_mod);
+
+    tests.root_module.addImport("jemalloc", jemalloc_mod);
+    tests.linkLibC();
+
+    tests.root_module.addImport("static-map", static_map_mod);
+    tests.root_module.addImport("chm", comptime_hash_map_mod);
+
     const tests_step = b.step("test", "Run all tests");
     tests_step.dependOn(&b.addRunArtifact(tests).step);
 }

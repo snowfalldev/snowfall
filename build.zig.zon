@@ -10,6 +10,18 @@
             .url = "git+https://github.com/notsatvrn/zig-utftools#907319711f345decef1afe21f60444bd881dd5b5",
             .hash = "1220e874cda3a6559d28d97e7b199bb00c17fdc0660ca9ec9ac34e693e9d3b1345dd",
         },
+        .@"static-map" = .{
+            .url = "git+https://github.com/travisstaloch/static-map#1c091e0348183dc72af20e7f061456d40a60f9d2",
+            .hash = "1220e8f3ccc4f9c9269e0cbd0e2af55ece3bdd7342899fcb59d0bb8f64d0432f970e",
+        },
+        .comptime_hash_map = .{
+            .url = "git+https://github.com/Vexu/comptime_hash_map#e5d06ce6c65833912444888ab98e824021a37d42",
+            .hash = "12201a64fad9fed8b6033df3c6e7337e3335620dac834f1b2f2acdfcea17555aa5ce",
+        },
+        .jemalloc = .{
+            .url = "git+https://github.com/jiacai2050/zig-jemalloc#75bedd9841fe756377480f40229f4cead13be4d2",
+            .hash = "122091f1814c6aa1891d8b759de68947f4e14f270d06c1abdcadfce70ec5b37211de",
+        },
     },
     .paths = .{
         "",

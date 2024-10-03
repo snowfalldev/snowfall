@@ -7,13 +7,12 @@ pub const std_options = .{
 };
 
 pub fn main() !void {
-    var alloc = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = alloc.deinit();
-    const allocator = alloc.allocator();
+    //var alloc = std.heap.GeneralPurposeAllocator(.{}){};
+    //defer _ = alloc.deinit();
+    //const allocator = alloc.allocator();
+    const allocator = @import("jemalloc").allocator;
 
     const data =
-        \\//! this is top-level doc comment
-        \\
         \\pub const test = "haiii 👋";
         \\
         \\// this is a regular comment, doesn't get tokenized
@@ -43,7 +42,7 @@ pub fn main() !void {
         \\  std.printf("1 + 2 = %d\n", 3);
         \\  std.printf("0.1 * 5.5 = %d\n", 0.55);
         \\  std.printf("3 + 1 = %d\n", 4u32);
-        \\  std.printf("0.2 * 3.3 = %d\n", 0.66f16);
+        \\  std.printf("0.2 * 3.3 = %d\n", 6.6e-1f16);
         \\  @panic("welp");
         \\}
     ;

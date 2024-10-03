@@ -9,6 +9,8 @@ const Logger = @import("../log.zig").Logger;
 const value = @import("../vm/value.zig");
 const NumberType = value.NumberType;
 const Number = value.Number;
+const @"type" = @import("../vm/type.zig");
+const BuiltinType = @"type".BuiltinType;
 
 const utftools = @import("utftools");
 const code_point = @import("code_point");
@@ -68,7 +70,7 @@ pub const Token = union(enum) {
         } else if (string.len > 0 and !isNumberChar(string[0])) {
             if (containsString(&keywords, string)) {
                 return .{ .keyword = string };
-            } else if (value.BuiltinType.string_map.has(string)) {
+            } else if (BuiltinType.string_map.has(string)) {
                 return .{ .builtin_type = string };
             } else {
                 return .{ .identifier = string };
@@ -158,7 +160,7 @@ inline fn numberBaseCharToBase(char: u21) ?u8 {
     };
 }
 
-// All valid separating symbols.
+// All valid symbols which mean there's a new token.
 inline fn isSeparatingSymbol(char: u21) bool {
     return switch (char) {
         '&', // logical/bitwise and
@@ -252,7 +254,6 @@ start: Position = .{},
 iter: code_point.Iterator,
 gcd: GenCatData,
 current: CodePoint,
-next: ?CodePoint = null,
 basic: []const u8 = "",
 state: State = .none,
 
@@ -294,7 +295,6 @@ pub fn clear(self: *Self, free: bool) void {
 
     self.iter.i = 0;
     self.current = self.iter.next() orelse undefined;
-    self.next = null;
     self.state = .none;
 }
 
@@ -330,7 +330,6 @@ pub fn addBasicToken(self: *Self, comptime symbol: bool) !void {
 // Moves the lexer position, and sets the current and next characters.
 // Skips separator characters.
 pub fn advance(self: *Self) !void {
-    self.next = null;
     self.current = self.iter.next() orelse {
         self.pos.raw += 1;
         self.pos.col += 1;
@@ -370,8 +369,7 @@ pub fn advance(self: *Self) !void {
 }
 
 pub inline fn peek(self: *Self) CodePoint {
-    if (self.next == null) self.next = self.iter.peek();
-    return self.next orelse undefined;
+    return self.iter.peek() orelse undefined;
 }
 
 pub inline fn finished(self: Self) bool {
@@ -478,7 +476,7 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
 
 inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
     self.state = .number;
-    var number_span = Span{ self.pos, self.pos };
+    var span = Span{ self.pos, self.pos };
 
     const obase = numberBaseCharToBase(self.peek().code);
     const base = if (self.current.code == '0') obase orelse 10 else 10;
@@ -489,17 +487,18 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
 
     const after_base = self.pos.raw;
 
-    var number_type = NumberType.u64;
+    var typ = NumberType.u64;
     var exponent_reached = false;
+    var sign_reached = false;
     var explicit_type_char: ?CodePoint = null;
 
     if (explicit_sign_number) {
-        number_type = NumberType.i64;
+        typ = NumberType.i64;
         try self.advance();
     }
 
     while (!self.finished()) : (try self.advance()) {
-        number_span[1] = self.pos;
+        span[1] = self.pos;
         num: switch (self.current.code) {
             '0'...'9', '_' => {},
             'f' => continue :num if (base == 10) 'i' else 'F',
@@ -508,22 +507,28 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
                 break;
             },
             'a'...'d', 'A'...'D', 'F' => if (base != 16)
-                return self.fatal("hex char in base {} number.", .{base}, number_span, self.pos),
+                return self.fatal("hex char in base {} number.", .{base}, span, self.pos),
             'e', 'E' => switch (base) {
                 16 => {},
-                10 => if (number_type == .f64) {
+                10 => if (typ == .f64) {
                     if (!exponent_reached) {
                         exponent_reached = true;
-                    } else return self.fatal("hex char in float exponent.", .{}, number_span, self.pos);
-                } else return self.fatal("hex char in base 10 number (not known to be float yet).", .{}, number_span, self.pos),
-                else => return self.fatal("hex char in base {} number.", .{base}, number_span, self.pos),
+                    } else return self.fatal("hex char in float exponent.", .{}, span, self.pos);
+                } else return self.fatal("hex char in base 10 number (not known to be float yet).", .{}, span, self.pos),
+                else => return self.fatal("hex char in base {} number.", .{base}, span, self.pos),
             },
+            '+', '-' => if (exponent_reached) {
+                if (sign_reached) break;
+                sign_reached = true;
+            } else unreachable,
             '.' => {
-                if (number_type == NumberType.f64 or base != 10) break;
-                number_type = NumberType.f64;
+                if (typ == NumberType.f64 or base != 10) break;
+                typ = NumberType.f64;
             },
-            else => return self.fatal("unexpected character in number.", .{}, number_span, self.pos),
+            else => return self.fatal("unexpected character in number.", .{}, span, self.pos),
         }
+
+        if (exponent_reached and (self.peek().code == '+' or self.peek().code == '-')) continue;
 
         if (isSeparatingSymbol(self.peek().code) or self.isSeparator(self.peek().code)) {
             try self.advance();
@@ -534,7 +539,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
     const number_data = self.src.data[after_base..self.pos.raw];
 
     var explicit_type_span = Span{ self.pos, self.pos };
-    var type_string: []const u8 = @tagName(number_type);
+    var type_string: []const u8 = @tagName(typ);
 
     var err = false;
     if (explicit_type_char) |char| get_type: {
@@ -562,31 +567,31 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
             else => unreachable,
         };
 
-        number_span[1] = explicit_type_span[1];
+        span[1] = explicit_type_span[1];
 
-        if ((char.code == 'i' or char.code == 'n') and number_type == .f64) {
-            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, number_span, explicit_type_span[0]);
+        if ((char.code == 'i' or char.code == 'n') and typ == .f64) {
+            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, span, explicit_type_span[0]);
             err = true;
         } else if (char.code == 'u') {
-            if (number_type == .i64 and number_data[0] == '-') {
-                try self.logger.err("unsigned integers cannot be negative.", .{}, number_span, explicit_type_span[0]);
+            if (typ == .i64 and number_data[0] == '-') {
+                try self.logger.err("unsigned integers cannot be negative.", .{}, span, explicit_type_span[0]);
                 err = true;
-            } else if (number_type == .f64) {
-                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, number_span, explicit_type_span[0]);
+            } else if (typ == .f64) {
+                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, span, explicit_type_span[0]);
                 err = true;
             }
         }
 
-        number_type = new_type.?;
+        typ = new_type.?;
     }
 
-    const number = if (!err) Number.parse(number_type, number_data, base, self.allocator) catch num: {
-        try self.logger.err("number cannot fit in {s}.", .{type_string}, number_span, explicit_type_span[0]);
+    const number = if (!err) Number.parse(typ, number_data, base, self.allocator) catch num: {
+        try self.logger.err("number cannot fit in {s}.", .{type_string}, span, explicit_type_span[0]);
         break :num Number{ .u64 = 0 };
     } else Number{ .u64 = 0 };
 
     try self.output.append(.{
-        .span = number_span,
+        .span = span,
         .token = .{ .number = number },
     });
 
