@@ -1,5 +1,7 @@
 const std = @import("std");
-const ast = @import("ast.zig");
+const jemalloc = @import("jemalloc").allocator;
+
+const Module = @import("Module.zig");
 
 pub const std_options = .{
     .fmt_max_depth = 3,
@@ -7,11 +9,6 @@ pub const std_options = .{
 };
 
 pub fn main() !void {
-    //var alloc = std.heap.GeneralPurposeAllocator(.{}){};
-    //defer _ = alloc.deinit();
-    //const allocator = alloc.allocator();
-    const allocator = @import("jemalloc").allocator;
-
     const data =
         \\pub const test = "haiii 👋";
         \\
@@ -47,17 +44,13 @@ pub fn main() !void {
         \\}
     ;
 
-    const src = try ast.source.Source.init(.{ .utf8 = data }, .{ .utf8 = "main" }, allocator);
-    defer src.deinit();
-    var lexer = try ast.Lexer.init(allocator, src);
-    defer lexer.deinit();
-
-    const tokens = try lexer.lexFull();
-    defer ast.Lexer.deinitTokens(tokens, allocator);
+    var mod = try Module.init(.{ .utf8 = data }, .{ .utf8 = "main" }, std.heap.page_allocator);
+    defer mod.deinit();
+    const tokens = try mod.finishLexer();
 
     for (tokens) |token| {
-        const string = try token.token.toString(allocator);
-        defer allocator.free(string);
+        const string = try token.token.toString(jemalloc);
+        defer jemalloc.free(string);
         std.debug.print(" - {{ {}..{}, {s} }}\n", .{ token.span[0].col, token.span[1].col, string });
     }
 

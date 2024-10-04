@@ -1,9 +1,29 @@
-pub const source = @import("ast/source.zig");
 pub const Lexer = @import("ast/Lexer.zig");
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Token = Lexer.Token;
+
+// SOURCE FILE POSITIONS
+
+pub const Pos = struct {
+    raw: u32 = 0,
+    row: u32 = 0,
+    col: u32 = 0,
+
+    // Returns the position after this one.
+    pub inline fn next(pos: Pos) Pos {
+        return .{
+            .raw = pos.raw + 1,
+            .row = pos.row,
+            .col = pos.col + 1,
+        };
+    }
+};
+
+pub const Span = struct { Pos = .{}, Pos = .{} };
+
+// ABSTRACT SYNTAX TREE
 
 // STATEMENTS
 pub const BlockStatement = union(enum) {

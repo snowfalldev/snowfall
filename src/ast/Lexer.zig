@@ -1,9 +1,11 @@
 const std = @import("std");
 const log = @import("../log.zig");
 const util = @import("util.zig");
-const source = @import("source.zig");
+const ast = @import("../ast.zig");
 
 const Allocator = std.mem.Allocator;
+
+const Module = @import("../Module.zig");
 
 const Logger = @import("../log.zig").Logger;
 const value = @import("../vm/value.zig");
@@ -27,8 +29,8 @@ const isNumberChar = util.isNumberChar;
 const isHexadecimalChar = util.isHexadecimalChar;
 const containsString = util.containsString;
 
-const Position = source.Position;
-const Span = source.Span;
+const Pos = ast.Pos;
+const Span = ast.Span;
 
 // A lexer token.
 pub const Token = union(enum) {
@@ -246,10 +248,11 @@ allocator: Allocator,
 
 output: Tokens,
 
-src: source.Source,
-pos: Position = .{},
-last: Position = .{},
-start: Position = .{},
+mod: *Module,
+data: []const u8,
+pos: Pos = .{},
+last: Pos = .{},
+start: Pos = .{},
 
 iter: code_point.Iterator,
 gcd: GenCatData,
@@ -263,17 +266,18 @@ failed: bool = false,
 const Self = @This();
 
 // Initializes a new lexer.
-pub fn init(allocator: Allocator, src: source.Source) !Self {
-    var iter = code_point.Iterator{ .bytes = src.data };
+pub fn init(mod: *Module) !Self {
+    var iter = code_point.Iterator{ .bytes = mod.data.buf };
     const current = iter.next();
     return .{
-        .allocator = allocator,
-        .output = Tokens.init(allocator),
-        .src = src,
+        .allocator = mod.allocator,
+        .output = Tokens.init(mod.allocator),
+        .mod = mod,
+        .data = mod.data.buf,
         .iter = iter,
-        .gcd = try GenCatData.init(allocator),
+        .gcd = try GenCatData.init(mod.allocator),
         .current = current orelse undefined,
-        .logger = Logger(.lexer).init(allocator, src),
+        .logger = Logger(.lexer).init(mod.allocator, mod),
     };
 }
 
@@ -299,8 +303,8 @@ pub fn clear(self: *Self, free: bool) void {
 }
 
 // Lexes the entire queue.
-pub inline fn lexFull(self: *Self) ![]LocatedToken {
-    while (!self.finished()) try self.lexNext();
+pub inline fn finish(self: *Self) ![]LocatedToken {
+    while (!self.finished()) try self.next();
     return self.output.toOwnedSlice();
 }
 
@@ -313,7 +317,7 @@ pub inline fn getLastToken(self: *Self) ?LocatedToken {
 // Adds the current basic token to the output.
 pub fn addBasicToken(self: *Self, comptime symbol: bool) !void {
     if (self.basic.len != 0) {
-        self.basic.ptr = @ptrCast(&self.src.data[self.start.raw]);
+        self.basic.ptr = @ptrCast(&self.data[self.start.raw]);
 
         if (Token.fromBasicString(self.basic)) |token|
             try self.output.append(.{ .span = .{ self.start, self.last }, .token = token });
@@ -373,19 +377,19 @@ pub inline fn peek(self: *Self) CodePoint {
 }
 
 pub inline fn finished(self: Self) bool {
-    return (self.pos.raw >= self.src.data.len or self.failed);
+    return (self.pos.raw >= self.data.len or self.failed);
 }
 
 inline fn isLineSeparator(char: u21) bool {
     // keep in sync with Zl Unicode category
-    return char == '\n' or char == 0x2028;
+    return char == '\n' or char == '\r' or char == 0x2028;
 }
 
 inline fn isSeparator(self: *Self, char: u21) bool {
     return isLineSeparator(char) or (self.state == .none and self.gcd.isSeparator(self.current.code));
 }
 
-inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Position) !void {
+inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
     try self.logger.err(fmt, args, span, hi);
     self.failed = true;
 }
@@ -404,7 +408,7 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
             };
         },
         'x' => {
-            if (self.src.data.len > self.pos.raw + 3) {
+            if (self.data.len > self.pos.raw + 3) {
                 try self.advance(); // Advance past '\'.
                 try self.advance(); // Advance past 'x'.
                 const hex_start = self.pos;
@@ -428,7 +432,7 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
             try self.advance(); // Advance past '\'.
             try self.advance(); // Advance past 'u'.
 
-            var fail_pos = Position{};
+            var fail_pos = Pos{};
 
             if (self.current.code == '{') parse: {
                 try self.advance(); // Advance past '{'.
@@ -455,7 +459,7 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                     idx -%= 1;
                 }
 
-                const char = parseUnsigned(u24, self.src.data[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
+                const char = parseUnsigned(u24, self.data[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
                 if (char > 0x10FFFF) {
                     try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos }, null);
                     return 0xFFFD;
@@ -536,7 +540,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
         }
     }
 
-    const number_data = self.src.data[after_base..self.pos.raw];
+    const number_data = self.data[after_base..self.pos.raw];
 
     var explicit_type_span = Span{ self.pos, self.pos };
     var type_string: []const u8 = @tagName(typ);
@@ -549,7 +553,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
             try self.advance();
         }
 
-        type_string = self.src.data[explicit_type_span[0].raw..self.pos.raw];
+        type_string = self.data[explicit_type_span[0].raw..self.pos.raw];
 
         var new_type: ?NumberType = null;
         if (type_string.len > 1) {
@@ -599,7 +603,7 @@ inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
 }
 
 // Lex characters into the next token(s).
-pub fn lexNext(self: *Self) !void {
+pub fn next(self: *Self) !void {
     if (self.finished()) return;
 
     const initial_len = self.output.items.len;
@@ -632,15 +636,15 @@ pub fn lexNext(self: *Self) !void {
                 while (!self.finished()) : (try self.advance()) {
                     if (self.current.code == '"') {
                         if (last == inner_start) {
-                            out.buf = self.src.data[last..self.pos.raw];
+                            out.buf = self.data[last..self.pos.raw];
                             out.managed = false;
                         } else {
-                            try buffer.appendSlice(self.src.data[last..self.pos.raw]);
+                            try buffer.appendSlice(self.data[last..self.pos.raw]);
                             out.buf = try buffer.toOwnedSlice();
                         }
                         break;
                     } else if (self.current.code == '\\') {
-                        try buffer.appendSlice(self.src.data[last..self.pos.raw]);
+                        try buffer.appendSlice(self.data[last..self.pos.raw]);
                         const c = try self.parseEscapeSequence('"');
                         try utftools.writeCodepointToUtf8(c, buffer.writer());
                         last = self.peek().offset;
@@ -721,7 +725,7 @@ pub fn lexNext(self: *Self) !void {
                 if (out.top_level and (self.output.items.len != 0 or self.basic.len != 0))
                     return self.fatal("top-level doc comment must be at the start of the file.", .{}, span, null);
 
-                out.buf = self.src.data[start.raw .. span[1].raw + 1];
+                out.buf = self.data[start.raw .. span[1].raw + 1];
 
                 if (doc or out.top_level) try self.output.append(.{
                     .span = span,
