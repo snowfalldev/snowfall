@@ -4,15 +4,15 @@ const big = std.math.big;
 const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
 
+const util = @import("../../util.zig");
+const code_point = @import("code_point");
+
 const @"type" = @import("../type.zig");
 const BuiltinType = @"type".BuiltinType;
 
-const util = @import("../../ast/util.zig");
-const code_point = @import("code_point");
-
-// zig fmt: off
-
 pub const NumberType = enum(u8) {
+    // zig fmt: off
+    
     bigint = 0x16,
     i128   = 0x15,
     i64    = 0x14,
@@ -24,28 +24,28 @@ pub const NumberType = enum(u8) {
     u32    = 0x03,
     u16    = 0x02,
     u8     = 0x01,
-    f128   = 0x25,
     f64    = 0x24,
     f32    = 0x23,
     f16    = 0x22,
 
     pub const string_map = std.StaticStringMap(NumberType).initComptime(.{
         .{ "bigint", .bigint },
-        .{ "i128",   .i128 },
-        .{ "i64",    .i64 },
-        .{ "i32",    .i32 },
-        .{ "i16",    .i16 },
-        .{ "i8",     .i8 },
-        .{ "u128",   .u128 },
-        .{ "u64",    .u64 },
-        .{ "u32",    .u32 },
-        .{ "u16",    .u16 },
-        .{ "u8",     .u8 },
-        .{ "f128",   .f128 },
-        .{ "f64",    .f64 },
-        .{ "f32",    .f32 },
-        .{ "f16",    .f16 },
+        .{ "i128",   .i128   },
+        .{ "i64",    .i64    },
+        .{ "i32",    .i32    },
+        .{ "i16",    .i16    },
+        .{ "i8",     .i8     },
+        .{ "u128",   .u128   },
+        .{ "u64",    .u64    },
+        .{ "u32",    .u32    },
+        .{ "u16",    .u16    },
+        .{ "u8",     .u8     },
+        .{ "f64",    .f64    },
+        .{ "f32",    .f32    },
+        .{ "f16",    .f16    },
     });
+
+    // zig fmt: on
 
     pub fn isBuiltinType(typ: NumberType, btyp: BuiltinType) bool {
         if (btyp == .number) return true;
@@ -53,13 +53,14 @@ pub const NumberType = enum(u8) {
         return switch (typ) {
             .bigint, .i128, .i64, .i32, .i16, .i8 => btyp == .int,
             .u128, .u64, .u32, .u16, .u8 => btyp == .uint,
-            .f128, .f64, .f32, .f16 => btyp == .float,
+            .f64, .f32, .f16 => btyp == .float,
         };
     }
 };
 
 fn numTypScalar(comptime typ: NumberType) type {
     return switch (typ) {
+        // zig fmt: off
         .bigint => @compileError("bigint is not scalar"),
         .i128   => i128,
         .i64    => i64,
@@ -71,14 +72,15 @@ fn numTypScalar(comptime typ: NumberType) type {
         .u32    => u32,
         .u16    => u16,
         .u8     => u8,
-        .f128   => f128,
         .f64    => f64,
         .f32    => f32,
         .f16    => f16,
+        // zig fmt: on
     };
 }
- 
+
 pub const Number = union(NumberType) {
+    // zig fmt: off
     bigint: big.int.Managed,
     i128:   i128,
     i64:    i64,
@@ -90,21 +92,20 @@ pub const Number = union(NumberType) {
     u32:    u32,
     u16:    u16,
     u8:     u8,
-    f128:   f128,
     f64:    f64,
     f32:    f32,
     f16:    f16,
+    // zig fmt: on
 
     pub fn parse(typ: NumberType, buf: []const u8, base: u8, allocator: Allocator) !Number {
         return switch (typ) {
-            // zig fmt: on
-            .bigint => .{ .bigint = out: {
+            .bigint => {
                 const limbs_len = big.int.calcSetStringLimbsBufferLen(base, buf.len);
                 const limbs = try allocator.alloc(big.Limb, limbs_len);
                 var out = big.int.Mutable{ .limbs = limbs, .len = 0, .positive = true };
                 try out.setString(base, buf, limbs, allocator);
-                break :out out.toManaged(allocator);
-            } },
+                return .{ .bigint = out.toManaged(allocator) };
+            },
             // zig fmt: off
             .i128 => .{ .i128 = try std.fmt.parseInt(     i128, buf, base) },
             .i64  => .{ .i64  = try std.fmt.parseInt(     i64,  buf, base) },
@@ -116,10 +117,10 @@ pub const Number = union(NumberType) {
             .u32  => .{ .u32  = try std.fmt.parseUnsigned(u32,  buf, base) },
             .u16  => .{ .u16  = try std.fmt.parseUnsigned(u16,  buf, base) },
             .u8   => .{ .u8   = try std.fmt.parseUnsigned(u8,   buf, base) },
-            .f128 => .{ .f128 = try std.fmt.parseFloat(   f128, buf) },
             .f64  => .{ .f64  = try std.fmt.parseFloat(   f64,  buf) },
             .f32  => .{ .f32  = try std.fmt.parseFloat(   f32,  buf) },
             .f16  => .{ .f16  = try std.fmt.parseFloat(   f16,  buf) },
+            // zig fmt: on
         };
     }
 
@@ -132,11 +133,82 @@ pub const Number = union(NumberType) {
         return @as(NumberType, num).isBuiltinType(typ);
     }
 
+    // HASHING
+
+    inline fn hashU128(v: u128, comptime stable: bool) u64 {
+        const lo: u64 = @truncate(v);
+        const hi: u64 = @truncate(v >> 64);
+        if (stable and hi == 0) return lo;
+        return std.math.rotr(u64, lo ^ std.math.rotl(u64, hi, 5), 3);
+    }
+
+    inline fn hashI128(v: i128) u64 {
+        // stability with uint types
+        if (v >= 0) {
+            if (v <= std.math.maxInt(u64)) return @truncate(@as(u128, @intCast(v)));
+            if (v <= std.math.maxInt(u128)) return hashU128(@bitCast(v), true);
+        }
+        // stability with smaller int types
+        if (v >= std.math.minInt(i64) and v <= std.math.maxInt(i64))
+            return @bitCast(@as(i64, @intCast(v)));
+
+        const uv: u128 = @bitCast(v);
+        const lo: u64 = @truncate(uv);
+        const hi: u64 = @truncate(uv >> 64);
+        return std.math.rotl(u64, (lo *% 3) ^ std.math.rotr(u64, hi, 3), 5);
+    }
+
+    pub fn hash(num: Number, allocator: Allocator) !u64 {
+        return switch (num) {
+            .bigint => |v| bigint: {
+                if (v.fits(u128)) break :bigint hashU128(v.to(u128) catch unreachable, true);
+                if (v.fits(i128)) break :bigint hashI128(v.to(i128) catch unreachable, true);
+                const str = try v.toString(allocator, 16, .upper);
+                defer allocator.free(str);
+                break :bigint std.hash.Wyhash.hash(0xCAFEBABEBADDC0DE, str);
+            },
+
+            inline .i64, .i32, .i16, .i8 => |v| @bitCast(@as(i64, @intCast(v))),
+            .i128 => |v| hashI128(v),
+            inline .u64, .u32, .u16, .u8 => |v| @intCast(v),
+            .u128 => |v| hashU128(v, false),
+
+            inline .f64, .f32, .f16 => |v, t| float: {
+                // stability with ints
+                if (@trunc(v) == v) {
+                    const T = numTypScalar(t);
+                    const uUpper: T = @floatFromInt(std.math.maxInt(u128));
+
+                    if (v >= 0.0 and v <= uUpper)
+                        break :float hashU128(@intFromFloat(v), true);
+
+                    const lower: T = @floatFromInt(std.math.minInt(i128));
+                    const upper: T = @floatFromInt(std.math.maxInt(i128));
+
+                    if (v >= lower and v <= upper)
+                        break :float hashI128(@intFromFloat(v), true);
+
+                    // stability with bigints (may be slow)
+                    const str = try allocPrint(allocator, "{d}", .{v});
+                    defer allocator.free(str);
+                    break :float std.hash.Wyhash.hash(0xCAFEBABEBADDC0DE, str);
+                }
+
+                const uTyp: NumberType = @enumFromInt(@intFromEnum(t) - 0x10);
+                const asU128: u128 = @intCast(@as(numTypScalar(uTyp), @bitCast(v)));
+                // this could use a little *magic* ("float :3" + the meaning of life)
+                break :float hashU128(asU128 ^ (0xF10A7083 << 42), false);
+            },
+        };
+    }
+
+    // CASTING
+
     // zig fmt: on
     fn mkBigInt(scalar: anytype, comptime target: type, allocator: Allocator) !big.int.Managed {
         const int: target = switch (@typeInfo(@TypeOf(scalar))) {
-            .int => @intCast(scalar),
-            .float => @intFromFloat(scalar),
+            .int, .comptime_int => @intCast(scalar),
+            .float, .comptime_float => @intFromFloat(scalar),
             else => @panic("non-number in mkBigInt"),
         };
 
@@ -153,7 +225,6 @@ pub const Number = union(NumberType) {
         d.deinit();
         return o;
     }
-    // zig fmt: off
 
     pub fn cast(self: Number, typ: NumberType, allocator: Allocator) !Number {
         return switch (self) {
@@ -166,14 +237,16 @@ pub const Number = union(NumberType) {
                     const val = try reduced.to(i128);
                     maxBigInt.deinit();
                     reduced.deinit();
-                    
+
                     break :int switch (typ) {
+                        // zig fmt: off
                         .i128 => .{ .i128 = val },
                         .i64  => .{ .i64  = @intCast(val) },
                         .i32  => .{ .i32  = @intCast(val) },
                         .i16  => .{ .i16  = @intCast(val) },
                         .i8   => .{ .i8   = @intCast(val) },
                         else  => unreachable,
+                        // zig fmt: on
                     };
                 },
                 inline .u128, .u64, .u32, .u16, .u8 => |t| uint: {
@@ -182,7 +255,7 @@ pub const Number = union(NumberType) {
                     var reduced = try bigIntMod(v, maxBigInt, allocator);
                     maxBigInt.deinit();
                     var val: u128 = 0;
-                    
+
                     if (!v.isPositive()) {
                         // emulate overflow
                         const tmp = (try reduced.to(i129)) + 1;
@@ -192,39 +265,37 @@ pub const Number = union(NumberType) {
                     reduced.deinit();
 
                     break :uint switch (typ) {
+                        // zig fmt: off
                         .u128 => .{ .u128 = val },
                         .u64  => .{ .u64  = @truncate(val) },
                         .u32  => .{ .u32  = @truncate(val) },
                         .u16  => .{ .u16  = @truncate(val) },
                         .u8   => .{ .u8   = @truncate(val) },
                         else  => unreachable,
+                        // zig fmt: on
                     };
                 },
-                inline .f128, .f64, .f32, .f16 => |t| if (false) float: {
-                    const max: i16385 = @intFromFloat(std.math.floatMax(numTypScalar(t)));
-                    var maxBigInt = try mkBigInt(max, i16385, allocator);
+                inline .f64, .f32, .f16 => |t| float: {
+                    const max: i1025 = @intFromFloat(std.math.floatMax(numTypScalar(t)));
+                    var maxBigInt = try mkBigInt(max, i1025, allocator);
                     var reduced = try bigIntMod(v, maxBigInt, allocator);
-                    //TODO: undefined symbol: __floatoitf
-                    //const val: f128 = @floatFromInt(try reduced.to(i16385));
-                    const int = try reduced.to(i16385);
-                    const int_str = try allocPrint(allocator, "{}", .{int});
-                    const val = try std.fmt.parseFloat(f128, int_str);
-                    allocator.free(int_str);
+                    const val: f64 = @floatFromInt(try reduced.to(i1025));
                     maxBigInt.deinit();
                     reduced.deinit();
 
                     break :float switch (typ) {
-                        .f128 => .{ .f128 = val },
-                        .f64  => .{ .f64  = @floatCast(val) },
+                        // zig fmt: off
+                        .f64  => .{ .f64  = val },
                         .f32  => .{ .f32  = @floatCast(val) },
                         .f16  => .{ .f16  = @floatCast(val) },
                         else  => unreachable,
+                        // zig fmt: on
                     };
-                } else .{ .f16 = 0 },
+                },
             },
-            inline .i128, .i64, .i32, .i16, .i8,
-            .u128, .u64, .u32, .u16, .u8 => |v| switch (typ) {
+            inline .i128, .i64, .i32, .i16, .i8, .u128, .u64, .u32, .u16, .u8 => |v| switch (typ) {
                 .bigint => .{ .bigint = try mkBigInt(v, i129, allocator) },
+                // zig fmt: off
                 .i128 => .{ .i128 = @intCast(v) },
                 .i64  => .{ .i64  = @intCast(v) },
                 .i32  => .{ .i32  = @intCast(v) },
@@ -235,13 +306,14 @@ pub const Number = union(NumberType) {
                 .u32  => .{ .u32  = @intCast(v) },
                 .u16  => .{ .u16  = @intCast(v) },
                 .u8   => .{ .u8   = @intCast(v) },
-                .f128 => .{ .f128 = @floatFromInt(v) },
                 .f64  => .{ .f64  = @floatFromInt(v) },
                 .f32  => .{ .f32  = @floatFromInt(v) },
                 .f16  => .{ .f16  = @floatFromInt(v) },
+                // zig fmt: on
             },
-            inline .f128, .f64, .f32, .f16 => |v| switch (typ) {
-                .bigint => .{ .bigint = try mkBigInt(v, i16385, allocator) },
+            inline .f64, .f32, .f16 => |v| switch (typ) {
+                .bigint => .{ .bigint = try mkBigInt(v, i1025, allocator) },
+                // zig fmt: off
                 .i128 => .{ .i128 = @intFromFloat(v) },
                 .i64  => .{ .i64  = @intFromFloat(v) },
                 .i32  => .{ .i32  = @intFromFloat(v) },
@@ -252,17 +324,15 @@ pub const Number = union(NumberType) {
                 .u32  => .{ .u32  = @intFromFloat(v) },
                 .u16  => .{ .u16  = @intFromFloat(v) },
                 .u8   => .{ .u8   = @intFromFloat(v) },
-                .f128 => .{ .f128 = @floatCast(v) },
                 .f64  => .{ .f64  = @floatCast(v) },
                 .f32  => .{ .f32  = @floatCast(v) },
                 .f16  => .{ .f16  = @floatCast(v) },
+                // zig fmt: on
             },
         };
     }
 
-    // zig fmt: on
-
-    pub inline fn write(self: Number, tagged: bool, writer: anytype) !void {
+    pub inline fn print(self: Number, comptime tagged: bool, writer: anytype) !void {
         if (tagged) try writer.print("{s}: ", .{@tagName(self)});
         return switch (self) {
             .bigint => |v| err: {
@@ -274,9 +344,9 @@ pub const Number = union(NumberType) {
         };
     }
 
-    pub inline fn toString(self: Number, tagged: bool, allocator: Allocator) ![]const u8 {
+    pub inline fn toString(self: Number, comptime tagged: bool, allocator: Allocator) ![]const u8 {
         var arraylist = std.ArrayList(u8).init(allocator);
-        try self.write(tagged, arraylist.writer());
+        try self.print(tagged, arraylist.writer());
         return arraylist.toOwnedSlice();
     }
 
@@ -317,7 +387,6 @@ pub const Number = union(NumberType) {
             .u32  => .{ .u32  = operands.lhs.u32  + operands.rhs.u32  },
             .u16  => .{ .u16  = operands.lhs.u16  + operands.rhs.u16  },
             .u8   => .{ .u8   = operands.lhs.u8   + operands.rhs.u8   },
-            .f128 => .{ .f128 = operands.lhs.f128 + operands.rhs.f128 },
             .f64  => .{ .f64  = operands.lhs.f64  + operands.rhs.f64  },
             .f32  => .{ .f32  = operands.lhs.f32  + operands.rhs.f32  },
             .f16  => .{ .f16  = operands.lhs.f16  + operands.rhs.f16  },
@@ -344,7 +413,6 @@ pub const Number = union(NumberType) {
             .u32  => .{ .u32  = operands.lhs.u32  - operands.rhs.u32  },
             .u16  => .{ .u16  = operands.lhs.u16  - operands.rhs.u16  },
             .u8   => .{ .u8   = operands.lhs.u8   - operands.rhs.u8   },
-            .f128 => .{ .f128 = operands.lhs.f128 - operands.rhs.f128 },
             .f64  => .{ .f64  = operands.lhs.f64  - operands.rhs.f64  },
             .f32  => .{ .f32  = operands.lhs.f32  - operands.rhs.f32  },
             .f16  => .{ .f16  = operands.lhs.f16  - operands.rhs.f16  },
@@ -371,7 +439,6 @@ pub const Number = union(NumberType) {
             .u32  => .{ .u32  = operands.lhs.u32  * operands.rhs.u32  },
             .u16  => .{ .u16  = operands.lhs.u16  * operands.rhs.u16  },
             .u8   => .{ .u8   = operands.lhs.u8   * operands.rhs.u8   },
-            .f128 => .{ .f128 = operands.lhs.f128 * operands.rhs.f128 },
             .f64  => .{ .f64  = operands.lhs.f64  * operands.rhs.f64  },
             .f32  => .{ .f32  = operands.lhs.f32  * operands.rhs.f32  },
             .f16  => .{ .f16  = operands.lhs.f16  * operands.rhs.f16  },
@@ -398,7 +465,6 @@ pub const Number = union(NumberType) {
             .u32  => .{ .u32  = operands.lhs.u32  / operands.rhs.u32  },
             .u16  => .{ .u16  = operands.lhs.u16  / operands.rhs.u16  },
             .u8   => .{ .u8   = operands.lhs.u8   / operands.rhs.u8   },
-            .f128 => .{ .f128 = operands.lhs.f128 / operands.rhs.f128 },
             .f64  => .{ .f64  = operands.lhs.f64  / operands.rhs.f64  },
             .f32  => .{ .f32  = operands.lhs.f32  / operands.rhs.f32  },
             .f16  => .{ .f16  = operands.lhs.f16  / operands.rhs.f16  },
@@ -421,7 +487,6 @@ pub const Number = union(NumberType) {
             .u32  => .{ .u32  = operands.lhs.u32  % operands.rhs.u32  },
             .u16  => .{ .u16  = operands.lhs.u16  % operands.rhs.u16  },
             .u8   => .{ .u8   = operands.lhs.u8   % operands.rhs.u8   },
-            .f128 => .{ .f128 = operands.lhs.f128 % operands.rhs.f128 },
             .f64  => .{ .f64  = operands.lhs.f64  % operands.rhs.f64  },
             .f32  => .{ .f32  = operands.lhs.f32  % operands.rhs.f32  },
             .f16  => .{ .f16  = operands.lhs.f16  % operands.rhs.f16  },

@@ -1,6 +1,6 @@
 const std = @import("std");
 const log = @import("../log.zig");
-const util = @import("util.zig");
+const util = @import("../util.zig");
 const ast = @import("../ast.zig");
 
 const Allocator = std.mem.Allocator;
@@ -10,7 +10,6 @@ const Module = @import("../Module.zig");
 const Logger = @import("../log.zig").Logger;
 const value = @import("../vm/value.zig");
 const NumberType = value.NumberType;
-const Number = value.Number;
 const @"type" = @import("../vm/type.zig");
 const BuiltinType = @"type".BuiltinType;
 
@@ -27,6 +26,7 @@ const parseFloat = std.fmt.parseFloat;
 const getOptional = util.getOptional;
 const isNumberChar = util.isNumberChar;
 const isHexadecimalChar = util.isHexadecimalChar;
+const isLineSeparator = util.isLineSeparator;
 const containsString = util.containsString;
 
 const Pos = ast.Pos;
@@ -39,8 +39,8 @@ pub const Token = union(enum) {
     undefined,
     bool: bool,
     char: u21,
-    string: String,
     number: Number,
+    string: String,
 
     // other
     symbol: u21,
@@ -48,6 +48,12 @@ pub const Token = union(enum) {
     builtin_type: []const u8,
     identifier: []const u8,
     doc_comment: DocComment,
+
+    pub const Number = struct {
+        buf: []const u8 = "",
+        base: u8 = 10,
+        typ: ?NumberType = null,
+    };
 
     pub const String = struct {
         buf: []const u8 = "",
@@ -93,14 +99,13 @@ pub const Token = union(enum) {
                 try utftools.writeCodepointToUtf8(v, writer);
                 try writer.writeByte('\'');
             },
+            .number => |v| {
+                try writer.print("number: {s} (base {})", .{ v.buf, v.base });
+                if (v.typ) |t| try writer.print(" ({s})", .{@tagName(t)});
+            },
             .string => |v| {
                 try writer.print("string: \"{s}\"", .{v.buf});
                 if (v.managed) try writer.writeAll(" (managed)");
-            },
-            .number => |v| {
-                try writer.writeAll("number: { ");
-                try v.write(true, writer);
-                try writer.writeAll(" }");
             },
 
             .symbol => |v| {
@@ -202,8 +207,10 @@ inline fn isSymbol(char: u21) bool {
 // zig fmt: off
 
 // All valid keywords.
-pub const keywords = [25][]const u8{
+pub const keywords = [27][]const u8{
     "as", // casting
+
+    "and", "or", // boolean operations
     
     "throw",  // raise error
     "try",    // try function which raises errors
@@ -380,11 +387,6 @@ pub inline fn finished(self: Self) bool {
     return (self.pos.raw >= self.data.len or self.failed);
 }
 
-inline fn isLineSeparator(char: u21) bool {
-    // keep in sync with Zl Unicode category
-    return char == '\n' or char == '\r' or char == 0x2028;
-}
-
 inline fn isSeparator(self: *Self, char: u21) bool {
     return isLineSeparator(char) or (self.state == .none and self.gcd.isSeparator(self.current.code));
 }
@@ -392,6 +394,117 @@ inline fn isSeparator(self: *Self, char: u21) bool {
 inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
     try self.logger.err(fmt, args, span, hi);
     self.failed = true;
+}
+
+inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
+    self.state = .number;
+    var span = Span{ self.pos, self.pos };
+    var out = Token.Number{};
+
+    const obase = numberBaseCharToBase(self.peek().code);
+    out.base = if (self.current.code == '0') obase orelse 10 else 10;
+    if (out.base != 10) {
+        try self.advance();
+        try self.advance();
+    }
+
+    const after_base = self.pos.raw;
+
+    var state = NumberType.u64;
+    var exponent_reached = false;
+    var sign_reached = false;
+    var explicit_type_char: ?CodePoint = null;
+
+    if (explicit_sign_number) {
+        state = NumberType.i64;
+        try self.advance();
+    }
+
+    while (!self.finished()) : (try self.advance()) {
+        span[1] = self.pos;
+        num: switch (self.current.code) {
+            '0'...'9', '_' => {},
+            'f' => continue :num if (out.base == 10) 'i' else 'F',
+            'n', 'i', 'u' => {
+                explicit_type_char = self.current;
+                break;
+            },
+            'a'...'d', 'A'...'D', 'F' => if (out.base != 16)
+                return self.fatal("hex char in base {} number.", .{out.base}, span, self.pos),
+            'e', 'E' => switch (out.base) {
+                16 => {},
+                10 => if (state == .f64) {
+                    if (!exponent_reached) {
+                        exponent_reached = true;
+                    } else return self.fatal("hex char in float exponent.", .{}, span, self.pos);
+                } else return self.fatal("hex char in base 10 number (not known to be float yet).", .{}, span, self.pos),
+                else => return self.fatal("hex char in base {} number.", .{out.base}, span, self.pos),
+            },
+            '+', '-' => if (exponent_reached) {
+                if (sign_reached) break;
+                sign_reached = true;
+            } else unreachable,
+            '.' => {
+                if (state == NumberType.f64 or out.base != 10) break;
+                state = NumberType.f64;
+            },
+            else => return self.fatal("unexpected character in number.", .{}, span, self.pos),
+        }
+
+        if (exponent_reached and (self.peek().code == '+' or self.peek().code == '-')) continue;
+
+        if (isSeparatingSymbol(self.peek().code) or self.isSeparator(self.peek().code)) {
+            try self.advance();
+            break;
+        }
+    }
+
+    out.buf = self.data[after_base..self.pos.raw];
+    var explicit_type_span = Span{ self.pos, self.pos };
+    var err = false;
+
+    if (explicit_type_char) |char| get_type: {
+        while (!self.finished()) {
+            if (isSymbol(self.current.code) or self.isSeparator(self.current.code)) break;
+            explicit_type_span[1] = self.pos;
+            try self.advance();
+        }
+
+        const type_string = self.data[explicit_type_span[0].raw..self.pos.raw];
+
+        if (type_string.len > 1) {
+            out.typ = NumberType.string_map.get(type_string);
+            if (out.typ == null) {
+                try self.logger.err("unknown type.", .{}, explicit_type_span, null);
+                err = true;
+                break :get_type;
+            }
+        } else out.typ = switch (char.code) {
+            'n' => .bigint,
+            'i' => .i64,
+            'u' => .u64,
+            'f' => .f64,
+            else => unreachable,
+        };
+
+        span[1] = explicit_type_span[1];
+
+        if ((char.code == 'i' or char.code == 'n') and state == .f64) {
+            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, span, explicit_type_span[0]);
+            err = true;
+        } else if (char.code == 'u') {
+            if (state == .i64 and out.buf[0] == '-') {
+                try self.logger.err("unsigned integers cannot be negative.", .{}, span, explicit_type_span[0]);
+                err = true;
+            } else if (state == .f64) {
+                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, span, explicit_type_span[0]);
+                err = true;
+            }
+        }
+    }
+
+    try self.output.append(.{ .span = span, .token = .{ .number = out } });
+    self.state = .none;
 }
 
 inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
@@ -408,24 +521,26 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
             };
         },
         'x' => {
-            if (self.data.len > self.pos.raw + 3) {
-                try self.advance(); // Advance past '\'.
-                try self.advance(); // Advance past 'x'.
-                const hex_start = self.pos;
-                const chars: [2]u8 = .{
-                    @truncate(self.current.code),
-                    @truncate(self.peek().code),
-                };
-                try self.advance();
+            try self.advance(); // Advance past '\'.
+            try self.advance(); // Advance past 'x'.
 
-                return parseUnsigned(u8, &chars, 16) catch {
-                    try self.logger.err("bad hexadecimal number.", .{}, .{ hex_start, self.pos }, null); // Overflow is unreachable.
-                    return 0xFFFD;
-                };
-            } else {
-                try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos }, null);
+            if (self.data.len <= self.pos.raw + 1) {
+                while (!self.finished()) try self.advance();
+                try self.logger.err("unexpected end of file.", .{}, .{ self.pos, self.pos }, null);
                 return 0xFFFD;
             }
+
+            const hex_start = self.pos;
+            const chars: [2]u8 = .{
+                @truncate(self.current.code),
+                @truncate(self.peek().code),
+            };
+            try self.advance();
+
+            return parseUnsigned(u8, &chars, 16) catch {
+                try self.logger.err("bad hexadecimal number.", .{}, .{ hex_start, self.pos }, null); // Overflow is unreachable.
+                return 0xFFFD;
+            };
         },
         'u' => {
             const esc_seq_start = self.pos;
@@ -459,6 +574,11 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                     idx -%= 1;
                 }
 
+                if (self.finished()) {
+                    try self.logger.err("unexpected end of file.", .{}, .{ self.pos, self.pos }, null);
+                    return 0xFFFD;
+                }
+
                 const char = parseUnsigned(u24, self.data[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
                 if (char > 0x10FFFF) {
                     try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos }, null);
@@ -476,130 +596,6 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
             return 0xFFFD;
         },
     };
-}
-
-inline fn parseNumber(self: *Self, explicit_sign_number: bool) !void {
-    self.state = .number;
-    var span = Span{ self.pos, self.pos };
-
-    const obase = numberBaseCharToBase(self.peek().code);
-    const base = if (self.current.code == '0') obase orelse 10 else 10;
-    if (base != 10) {
-        try self.advance();
-        try self.advance();
-    }
-
-    const after_base = self.pos.raw;
-
-    var typ = NumberType.u64;
-    var exponent_reached = false;
-    var sign_reached = false;
-    var explicit_type_char: ?CodePoint = null;
-
-    if (explicit_sign_number) {
-        typ = NumberType.i64;
-        try self.advance();
-    }
-
-    while (!self.finished()) : (try self.advance()) {
-        span[1] = self.pos;
-        num: switch (self.current.code) {
-            '0'...'9', '_' => {},
-            'f' => continue :num if (base == 10) 'i' else 'F',
-            'n', 'i', 'u' => {
-                explicit_type_char = self.current;
-                break;
-            },
-            'a'...'d', 'A'...'D', 'F' => if (base != 16)
-                return self.fatal("hex char in base {} number.", .{base}, span, self.pos),
-            'e', 'E' => switch (base) {
-                16 => {},
-                10 => if (typ == .f64) {
-                    if (!exponent_reached) {
-                        exponent_reached = true;
-                    } else return self.fatal("hex char in float exponent.", .{}, span, self.pos);
-                } else return self.fatal("hex char in base 10 number (not known to be float yet).", .{}, span, self.pos),
-                else => return self.fatal("hex char in base {} number.", .{base}, span, self.pos),
-            },
-            '+', '-' => if (exponent_reached) {
-                if (sign_reached) break;
-                sign_reached = true;
-            } else unreachable,
-            '.' => {
-                if (typ == NumberType.f64 or base != 10) break;
-                typ = NumberType.f64;
-            },
-            else => return self.fatal("unexpected character in number.", .{}, span, self.pos),
-        }
-
-        if (exponent_reached and (self.peek().code == '+' or self.peek().code == '-')) continue;
-
-        if (isSeparatingSymbol(self.peek().code) or self.isSeparator(self.peek().code)) {
-            try self.advance();
-            break;
-        }
-    }
-
-    const number_data = self.data[after_base..self.pos.raw];
-
-    var explicit_type_span = Span{ self.pos, self.pos };
-    var type_string: []const u8 = @tagName(typ);
-
-    var err = false;
-    if (explicit_type_char) |char| get_type: {
-        while (!self.finished()) {
-            if (isSymbol(self.current.code) or self.isSeparator(self.current.code)) break;
-            explicit_type_span[1] = self.pos;
-            try self.advance();
-        }
-
-        type_string = self.data[explicit_type_span[0].raw..self.pos.raw];
-
-        var new_type: ?NumberType = null;
-        if (type_string.len > 1) {
-            new_type = NumberType.string_map.get(type_string);
-            if (new_type == null) {
-                try self.logger.err("unknown type.", .{}, explicit_type_span, null);
-                err = true;
-                break :get_type;
-            }
-        } else new_type = switch (char.code) {
-            'n' => .bigint,
-            'i' => .i64,
-            'u' => .u64,
-            'f' => .f64,
-            else => unreachable,
-        };
-
-        span[1] = explicit_type_span[1];
-
-        if ((char.code == 'i' or char.code == 'n') and typ == .f64) {
-            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, span, explicit_type_span[0]);
-            err = true;
-        } else if (char.code == 'u') {
-            if (typ == .i64 and number_data[0] == '-') {
-                try self.logger.err("unsigned integers cannot be negative.", .{}, span, explicit_type_span[0]);
-                err = true;
-            } else if (typ == .f64) {
-                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, span, explicit_type_span[0]);
-                err = true;
-            }
-        }
-
-        typ = new_type.?;
-    }
-
-    const number = if (!err) Number.parse(typ, number_data, base, self.allocator) catch num: {
-        try self.logger.err("number cannot fit in {s}.", .{type_string}, span, explicit_type_span[0]);
-        break :num Number{ .u64 = 0 };
-    } else Number{ .u64 = 0 };
-
-    try self.output.append(.{
-        .span = span,
-        .token = .{ .number = number },
-    });
-
-    self.state = .none;
 }
 
 // Lex characters into the next token(s).
@@ -620,7 +616,7 @@ pub fn next(self: *Self) !void {
         }
 
         if (self.basic.len == 0 and (isNumberChar(self.current.code) or explicit_sign_number))
-            return self.parseNumber(explicit_sign_number);
+            return self.tokenizeNumber(explicit_sign_number);
 
         switch (self.current.code) {
             '"' => { // String parser.
@@ -677,7 +673,7 @@ pub fn next(self: *Self) !void {
                 if (self.current.code != '\'') {
                     while (!self.finished() and self.current.code != '\'') try self.advance();
                     try self.logger.err("character is too large.", .{}, .{ start, self.pos }, null);
-                    try self.logger.info("strings are defined with double quotes in tungsten.", .{}, null, null);
+                    try self.logger.info("strings are defined with double quotes.", .{}, null, null);
                 }
 
                 try self.output.append(.{

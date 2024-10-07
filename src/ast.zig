@@ -4,6 +4,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Token = Lexer.Token;
 
+const value = @import("vm/value.zig");
+const Number = value.Number;
+
 // SOURCE FILE POSITIONS
 
 pub const Pos = struct {
@@ -38,27 +41,9 @@ pub const BlockStatement = union(enum) {
 pub const Block = std.ArrayList(BlockStatement);
 
 // EXPRESSIONS
-pub const Comparator = enum {
-    eq,
-    ne,
-    gt,
-    lt,
-    gt_eq,
-    lt_eq,
-};
+pub const Comparator = enum { eq, ne, gt, lt, gt_eq, lt_eq };
 
-pub const BoolOperator = enum {
-    l_and,
-    l_or,
-
-    const Self = @This();
-
-    pub inline fn fromDouble(symbol: u8) ?Self {
-        if (symbol == '&') return Self.l_and;
-        if (symbol == '|') return Self.l_or;
-        return null;
-    }
-};
+pub const BoolOperator = enum { @"and", @"or", not };
 
 pub const MathOperator = enum {
     sum,
@@ -72,7 +57,6 @@ pub const MathOperator = enum {
     bw_and,
     bw_or,
     bw_not,
-    l_not,
     xor,
 
     const Self = @This();
@@ -87,7 +71,6 @@ pub const MathOperator = enum {
             '&' => Self.bw_and,
             '|' => Self.bw_or,
             '~' => Self.bw_not,
-            '!' => Self.l_not,
             '^' => Self.xor,
             else => null,
         };
@@ -101,22 +84,18 @@ pub const LiteralOperand = union(enum) {
     bool: bool,
     char: u21,
     string: []const u8,
-    uint: u128,
-    int: i128,
-    float: f128,
+    number: Number,
 
     const Self = @This();
 
     pub inline fn fromToken(token: Token) ?Self {
         return switch (token) {
-            Token.bool => |b| .{ .bool = b },
             Token.null => Self.null,
             Token.undefined => Self.undefined,
+            Token.bool => |b| .{ .bool = b },
             Token.char => |char| .{ .char = char },
             Token.string => |string| .{ .string = string },
-            Token.uint => |uint| .{ .uint = uint },
-            Token.int => |int| .{ .int = int },
-            Token.float => |float| .{ .float = float },
+            Token.number => |number| .{ .number = number },
             else => null,
         };
     }

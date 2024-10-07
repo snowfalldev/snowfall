@@ -23,6 +23,11 @@ pub inline fn isAlphanumericChar(char: u21) bool {
     return isNumberChar(char) or isLetterChar(char);
 }
 
+pub inline fn isLineSeparator(char: u21) bool {
+    // keep in sync with Zl Unicode category
+    return char == '\n' or char == '\r' or char == 0x2028;
+}
+
 // Optionally get value from "content" (array of T).
 pub inline fn getOptional(comptime T: type, content: []const T, pos: usize) ?T {
     if (content.len < pos + 1) return null;

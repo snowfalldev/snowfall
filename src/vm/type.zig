@@ -42,6 +42,16 @@ pub const TypeSet = struct {
     }
 };
 
+// ALL TYPES
+
+pub const Type = union(enum) {
+    builtin: BuiltinType,
+
+    @"struct": StructType,
+    @"enum": EnumType,
+    @"union": UnionType,
+};
+
 // BUILT-IN TYPES
 
 // zig fmt: off
@@ -58,7 +68,6 @@ pub const BuiltinType = enum(u8) {
     u32    = 0x03,
     u16    = 0x02,
     u8     = 0x01,
-    f128   = 0x25,
     f64    = 0x24,
     f32    = 0x23,
     f16    = 0x22,
@@ -78,20 +87,19 @@ pub const BuiltinType = enum(u8) {
 
     pub const string_map = chm.ComptimeStringHashMap(BuiltinType, .{
         .{ "bigint", .bigint },
-        .{ "i128",   .i128 },
-        .{ "i64",    .i64 },
-        .{ "i32",    .i32 },
-        .{ "i16",    .i16 },
-        .{ "i8",     .i8 },
-        .{ "u128",   .u128 },
-        .{ "u64",    .u64 },
-        .{ "u32",    .u32 },
-        .{ "u16",    .u16 },
-        .{ "u8",     .u8 },
-        .{ "f128",   .f128 },
-        .{ "f64",    .f64 },
-        .{ "f32",    .f32 },
-        .{ "f16",    .f16 },
+        .{ "i128",   .i128   },
+        .{ "i64",    .i64    },
+        .{ "i32",    .i32    },
+        .{ "i16",    .i16    },
+        .{ "i8",     .i8     },
+        .{ "u128",   .u128   },
+        .{ "u64",    .u64    },
+        .{ "u32",    .u32    },
+        .{ "u16",    .u16    },
+        .{ "u8",     .u8     },
+        .{ "f64",    .f64    },
+        .{ "f32",    .f32    },
+        .{ "f16",    .f16    },
 
         .{ "int",   .int },
         .{ "uint",  .uint },
@@ -108,3 +116,17 @@ pub const BuiltinType = enum(u8) {
 };
 
 // zig fmt: on
+
+// STRUCTURED TYPES
+
+pub const StructType = struct {
+    values: std.StaticStringMap(Type),
+};
+
+pub const EnumType = struct {
+    values: std.StaticStringMap(void),
+};
+
+pub const UnionType = struct {
+    values: std.StaticStringMap(Type),
+};

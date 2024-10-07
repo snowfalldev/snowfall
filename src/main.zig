@@ -1,12 +1,8 @@
 const std = @import("std");
 const jemalloc = @import("jemalloc").allocator;
 
-const Module = @import("Module.zig");
-
-pub const std_options = .{
-    .fmt_max_depth = 3,
-    .logFn = @import("log.zig").customLogger,
-};
+const helium = @import("helium");
+const Module = helium.Module;
 
 pub fn main() !void {
     const data =
@@ -44,7 +40,7 @@ pub fn main() !void {
         \\}
     ;
 
-    var mod = try Module.init(.{ .utf8 = data }, .{ .utf8 = "main" }, std.heap.page_allocator);
+    var mod = try Module.init(data, "main", std.heap.page_allocator);
     defer mod.deinit();
     const tokens = try mod.finishLexer();
 
@@ -53,28 +49,4 @@ pub fn main() !void {
         defer jemalloc.free(string);
         std.debug.print(" - {{ {}..{}, {s} }}\n", .{ token.span[0].col, token.span[1].col, string });
     }
-
-    //var parser = try Parser.init(allocator, tokens, "main", lexer.data);
-    //defer parser.deinit();
-    //const tree = try parser.parseFull();
-    //lexer.deinit();
-    //parser.deinit();
-
-    //std.debug.print("AST (items: {})\n", .{parser.output.items.len});
-
-    //for (tree.items) |node| {
-    //    std.debug.print(" - {}\n", .{node});
-    //}
-
-    // BENCHMARK
-    //var i: usize = 0;
-    //while (i < 10000) : (i += 1) {
-    //    _ = try lexer.lexFull();
-    //    lexer.clearRetainingCapacity();
-    //}
-
-    // PRINT TOKENS
-    //for ((try lexer.lexFull()).items) |token| {
-    //    std.debug.print(" - {{{}..{}, {s}}}\n", .{ token.start.col, token.end.col, try token.token.toString(allocator) });
-    //}
 }

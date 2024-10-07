@@ -1,4 +1,4 @@
-# Tungsten
+# Helium
 
 An easily embeddable scripting language for Zig.
 

@@ -1,7 +1,11 @@
 .{
-    .name = "tungsten",
+    .name = "helium",
     .version = "0.0.0",
     .dependencies = .{
+        .jemalloc = .{
+            .url = "git+https://github.com/jiacai2050/zig-jemalloc#75bedd9841fe756377480f40229f4cead13be4d2",
+            .hash = "122091f1814c6aa1891d8b759de68947f4e14f270d06c1abdcadfce70ec5b37211de",
+        },
         .zg = .{
             .url = "https://codeberg.org/dude_the_builder/zg/archive/v0.13.2.tar.gz",
             .hash = "122055beff332830a391e9895c044d33b15ea21063779557024b46169fb1984c6e40",
@@ -17,10 +21,6 @@
         .comptime_hash_map = .{
             .url = "git+https://github.com/Vexu/comptime_hash_map#e5d06ce6c65833912444888ab98e824021a37d42",
             .hash = "12201a64fad9fed8b6033df3c6e7337e3335620dac834f1b2f2acdfcea17555aa5ce",
-        },
-        .jemalloc = .{
-            .url = "git+https://github.com/jiacai2050/zig-jemalloc#75bedd9841fe756377480f40229f4cead13be4d2",
-            .hash = "122091f1814c6aa1891d8b759de68947f4e14f270d06c1abdcadfce70ec5b37211de",
         },
     },
     .paths = .{

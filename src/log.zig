@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
@@ -8,24 +9,9 @@ const ast = @import("ast.zig");
 const Pos = ast.Pos;
 const Span = ast.Span;
 
-pub fn customLogger(
-    comptime level: std.log.Level,
-    comptime scope: @TypeOf(.EnumLiteral),
-    comptime format: []const u8,
-    args: anytype,
-) void {
-    const prefix = "[" ++ @tagName(scope) ++ "] " ++ comptime level.asText() ++ ": ";
-
-    // Print the message to stderr, silently ignoring any errors
-    std.debug.lockStdErr();
-    defer std.debug.unlockStdErr();
-    const stderr = std.io.getStdErr().writer();
-    nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
-}
+const util = @import("util.zig");
 
 pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
-    const inner = std.log.scoped(scope);
-
     return struct {
         allocator: Allocator,
         mod: ?*Module,
@@ -80,41 +66,47 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
             };
         }
 
-        pub fn err(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
+        pub inline fn err(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
             @branchHint(.cold);
             const msg = try self.mkMsg(fmt, args, span, hi);
             try self.errs.append(msg);
-            inner.err("{s}{s}\n{s}", msg);
+            std.log.err("{s} {s}\n{s}", msg);
         }
 
         pub inline fn warn(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
             const msg = try self.mkMsg(fmt, args, span, hi);
             try self.warns.append(msg);
-            inner.warn("{s}{s}\n{s}", msg);
+            std.log.warn("{s} {s}\n{s}", msg);
         }
 
         pub inline fn info(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
             const msg = try self.mkMsg(fmt, args, span, hi);
             try self.infos.append(msg);
-            inner.info("{s}{s}\n{s}", msg);
+            std.log.info("{s} {s}\n{s}", msg);
         }
 
         pub inline fn debug(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
             const msg = try self.mkMsg(fmt, args, span, hi);
             try self.debugs.append(msg);
-            inner.debug("{s}{s}\n{s}", msg);
+            std.log.debug("{s} {s}\n{s}", msg);
         }
 
         fn infoString(self: Self, span: ?Span) ![]const u8 {
-            if (self.mod == null or span == null) return self.allocator.alloc(u8, 0);
+            var out = std.ArrayList(u8).init(self.allocator);
+            errdefer out.deinit();
+            if (builtin.mode == .Debug) try out.appendSlice("[" ++ @tagName(scope));
 
-            if (span) |s| {
-                return std.fmt.allocPrint(self.allocator, " ({s} | {}:{})", .{ self.mod.?.name.buf, s[0].row + 1, s[0].col + 1 });
-            } else {
-                return std.fmt.allocPrint(self.allocator, " ({s})", .{self.mod.?.name.buf});
+            if (self.mod == null or (self.mod != null and span == null)) {
+                if (builtin.mode == .Debug) try out.append(']');
+                return out.toOwnedSlice();
             }
 
-            unreachable;
+            try if (builtin.mode != .Debug) out.append('[') else out.appendSlice(" | ");
+
+            const writer = out.writer();
+            try writer.print("{s}", .{self.mod.?.name.buf});
+            try if (span) |s| writer.print(" ({}:{})]", .{ s[0].row + 1, s[0].col + 1 }) else out.append(']');
+            return out.toOwnedSlice();
         }
 
         fn dataString(self: Self, span: ?Span, hi: ?Pos) ![]const u8 {
@@ -124,16 +116,16 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
 
             const line_start_pos = s[0].raw - s[0].col;
             var line_end_pos: usize = line_start_pos;
-            while (line_end_pos < d.len and d[line_end_pos] != '\n') : (line_end_pos += 1) {}
+            while (line_end_pos < d.len and !util.isLineSeparator(d[line_end_pos])) line_end_pos += 1;
 
             var out = std.ArrayList(u8).init(self.allocator);
             errdefer out.deinit();
             try out.appendSlice(d[line_start_pos..line_end_pos]);
             try out.append('\n');
 
-            var i: usize = 0;
-            while (i < s[0].col) : (i += 1) try out.append(' ');
-            if (s[1].col > s[0].col) {
+            try out.appendNTimes(' ', s[0].col);
+            var i: usize = s[0].col;
+            if (s[1].col >= s[0].col) {
                 if (hi) |h| while (i < h.col) : (i += 1) try out.append('~');
                 try out.append('^');
                 i += 1;
