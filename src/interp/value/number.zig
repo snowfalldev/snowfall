@@ -142,9 +142,9 @@ pub const Number = union(NumberType) {
         return std.math.rotr(u64, lo ^ std.math.rotl(u64, hi, 5), 3);
     }
 
-    inline fn hashI128(v: i128) u64 {
+    inline fn hashI128(v: i128, comptime fits_uint: bool) u64 {
         // stability with uint types
-        if (v >= 0) {
+        if (fits_uint and v >= 0) {
             if (v <= std.math.maxInt(u64)) return @truncate(@as(u128, @intCast(v)));
             if (v <= std.math.maxInt(u128)) return hashU128(@bitCast(v), true);
         }
@@ -162,14 +162,14 @@ pub const Number = union(NumberType) {
         return switch (num) {
             .bigint => |v| bigint: {
                 if (v.fits(u128)) break :bigint hashU128(v.to(u128) catch unreachable, true);
-                if (v.fits(i128)) break :bigint hashI128(v.to(i128) catch unreachable, true);
+                if (v.fits(i128)) break :bigint hashI128(v.to(i128) catch unreachable, false);
                 const str = try v.toString(allocator, 16, .upper);
                 defer allocator.free(str);
                 break :bigint std.hash.Wyhash.hash(0xCAFEBABEBADDC0DE, str);
             },
 
             inline .i64, .i32, .i16, .i8 => |v| @bitCast(@as(i64, @intCast(v))),
-            .i128 => |v| hashI128(v),
+            .i128 => |v| hashI128(v, true),
             inline .u64, .u32, .u16, .u8 => |v| @intCast(v),
             .u128 => |v| hashU128(v, false),
 
@@ -179,14 +179,15 @@ pub const Number = union(NumberType) {
                     const T = numTypScalar(t);
                     const uUpper: T = @floatFromInt(std.math.maxInt(u128));
 
-                    if (v >= 0.0 and v <= uUpper)
-                        break :float hashU128(@intFromFloat(v), true);
+                    if (v >= 0.0) {
+                        if (v <= uUpper) break :float hashU128(@intFromFloat(v), true);
+                    } else {
+                        const lower: T = @floatFromInt(std.math.minInt(i128));
+                        const upper: T = @floatFromInt(std.math.maxInt(i128));
 
-                    const lower: T = @floatFromInt(std.math.minInt(i128));
-                    const upper: T = @floatFromInt(std.math.maxInt(i128));
-
-                    if (v >= lower and v <= upper)
-                        break :float hashI128(@intFromFloat(v), true);
+                        if (v >= lower and v <= upper)
+                            break :float hashI128(@intFromFloat(v), false);
+                    }
 
                     // stability with bigints (may be slow)
                     const str = try allocPrint(allocator, "{d}", .{v});

@@ -44,12 +44,22 @@ pub const TypeSet = struct {
 
 // ALL TYPES
 
-pub const Type = union(enum) {
+pub const Types = enum { builtin, structured, collection, reference };
+pub const Type = union(Types) {
     builtin: BuiltinType,
+    structured: StructuredType,
+    collection: CollectionType,
+    reference: ReferenceType,
 
-    @"struct": StructType,
-    @"enum": EnumType,
-    @"union": UnionType,
+    pub inline fn eql(self: Type, other: Type) bool {
+        if (@as(Types, self) != @as(Types, other)) return false;
+        return switch (self) {
+            .builtin => |v| v == other.builtin,
+            .structured => |v| v.eql(other.structured),
+            .collection => |v| v.eql(other.collection),
+            .reference => |v| v.eql(other.reference),
+        };
+    }
 };
 
 // BUILT-IN TYPES
@@ -83,7 +93,9 @@ pub const BuiltinType = enum(u8) {
     void   = 0x60,
     type   = 0x70,
     func   = 0x80,
-    any    = 0xFF,
+    
+    maybe = 0xFE, 
+    any   = 0xFF,
 
     pub const string_map = chm.ComptimeStringHashMap(BuiltinType, .{
         .{ "bigint", .bigint },
@@ -111,13 +123,22 @@ pub const BuiltinType = enum(u8) {
         .{ "void",   .void },
         .{ "type",   .type },
         .{ "func",   .func },
-        .{ "any",    .any },
+
+        .{ "maybe", .maybe },
+        .{ "any",   .any },
     });
 };
 
 // zig fmt: on
 
 // STRUCTURED TYPES
+
+pub const StructuredTypes = enum { @"struct", @"enum", @"union" };
+pub const StructuredType = union(StructuredTypes) {
+    @"struct": StructType,
+    @"enum": EnumType,
+    @"union": UnionType,
+};
 
 pub const StructType = struct {
     values: std.StaticStringMap(Type),
@@ -129,4 +150,34 @@ pub const EnumType = struct {
 
 pub const UnionType = struct {
     values: std.StaticStringMap(Type),
+};
+
+// COLLECTION TYPES
+
+pub const CollectionTypes = enum { list, set, map };
+pub const CollectionType = union(CollectionTypes) {
+    list: ListType,
+    set: SetType,
+    map: MapType,
+};
+
+pub const ListType = struct {
+    item: *const Type,
+};
+
+pub const SetType = struct {
+    item: *const Type,
+};
+
+pub const MapType = struct {
+    key: *const Type,
+    value: *const Type,
+};
+
+// REFERENCES
+
+pub const ReferenceTypes = enum { constant, mutable };
+pub const ReferenceType = union(ReferenceTypes) {
+    constant: *const Type,
+    mutable: *const Type,
 };
