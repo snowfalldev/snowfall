@@ -8,8 +8,11 @@ inner: []const u8,
 
 const Self = @This();
 
+const hash_seed_str: []align(8) const u8 = @alignCast("stringss");
+const hash_seed = @as(*const u64, @ptrCast(hash_seed_str)).*;
+
 pub inline fn hash(self: Self) u64 {
-    return std.hash.Wyhash.hash(0xCAFEBABEBADDC0DE, self.inner);
+    return std.hash.Wyhash.hash(hash_seed, self.inner);
 }
 
 pub inline fn print(self: Self, comptime tagged: bool, writer: anytype) !void {

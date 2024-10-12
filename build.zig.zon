@@ -18,12 +18,6 @@
             .url = "git+https://github.com/travisstaloch/static-map#1c091e0348183dc72af20e7f061456d40a60f9d2",
             .hash = "1220e8f3ccc4f9c9269e0cbd0e2af55ece3bdd7342899fcb59d0bb8f64d0432f970e",
         },
-        .comptime_hash_map = .{
-            .url = "git+https://github.com/Vexu/comptime_hash_map#e5d06ce6c65833912444888ab98e824021a37d42",
-            .hash = "12201a64fad9fed8b6033df3c6e7337e3335620dac834f1b2f2acdfcea17555aa5ce",
-        },
     },
-    .paths = .{
-        "",
-    },
+    .paths = .{""},
 }

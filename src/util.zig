@@ -1,12 +1,5 @@
 const std = @import("std");
 
-// UTILITIES
-
-pub fn containsString(comptime haystack: []const []const u8, needle: []const u8) bool {
-    inline for (haystack) |string| if (std.mem.eql(u8, string, needle)) return true;
-    return false;
-}
-
 pub inline fn isNumberChar(char: u21) bool {
     return char >= '0' and char <= '9';
 }
@@ -32,4 +25,18 @@ pub inline fn isLineSeparator(char: u21) bool {
 pub inline fn getOptional(comptime T: type, content: []const T, pos: usize) ?T {
     if (content.len < pos + 1) return null;
     return content[pos];
+}
+
+pub inline fn mkStringMap(comptime T: type) std.StaticStringMap(T) {
+    const type_info = @typeInfo(T);
+    if (type_info != .@"enum") @compileError("mkStringMap with non-enum type");
+
+    const fields = type_info.@"enum".fields;
+    comptime var out: [fields.len]struct { []const u8, T } = undefined;
+
+    inline for (fields, 0..) |field, i| {
+        out[i] = .{ field.name, @field(T, field.name) };
+    }
+
+    return std.StaticStringMap(T).initComptime(out);
 }

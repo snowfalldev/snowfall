@@ -1,1 +1,1 @@
-const value = @import("vm/value.zig");
+const value = @import("interp/value.zig");

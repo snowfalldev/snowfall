@@ -28,22 +28,7 @@ pub const NumberType = enum(u8) {
     f32    = 0x23,
     f16    = 0x22,
 
-    pub const string_map = std.StaticStringMap(NumberType).initComptime(.{
-        .{ "bigint", .bigint },
-        .{ "i128",   .i128   },
-        .{ "i64",    .i64    },
-        .{ "i32",    .i32    },
-        .{ "i16",    .i16    },
-        .{ "i8",     .i8     },
-        .{ "u128",   .u128   },
-        .{ "u64",    .u64    },
-        .{ "u32",    .u32    },
-        .{ "u16",    .u16    },
-        .{ "u8",     .u8     },
-        .{ "f64",    .f64    },
-        .{ "f32",    .f32    },
-        .{ "f16",    .f16    },
-    });
+    pub const string_map = util.mkStringMap(NumberType);
 
     // zig fmt: on
 
@@ -145,8 +130,9 @@ pub const Number = union(NumberType) {
     inline fn hashI128(v: i128, comptime fits_uint: bool) u64 {
         // stability with uint types
         if (fits_uint and v >= 0) {
-            if (v <= std.math.maxInt(u64)) return @truncate(@as(u128, @intCast(v)));
-            if (v <= std.math.maxInt(u128)) return hashU128(@bitCast(v), true);
+            if (v <= std.math.maxInt(u64))
+                return @truncate(@as(u128, @intCast(v)));
+            return hashU128(@bitCast(v), true);
         }
         // stability with smaller int types
         if (v >= std.math.minInt(i64) and v <= std.math.maxInt(i64))
@@ -158,6 +144,9 @@ pub const Number = union(NumberType) {
         return std.math.rotl(u64, (lo *% 3) ^ std.math.rotr(u64, hi, 3), 5);
     }
 
+    const hash_seed_str: []align(8) const u8 = @alignCast("numberss");
+    const hash_seed = @as(*const u64, @ptrCast(hash_seed_str)).*;
+
     pub fn hash(num: Number, allocator: Allocator) !u64 {
         return switch (num) {
             .bigint => |v| bigint: {
@@ -165,7 +154,7 @@ pub const Number = union(NumberType) {
                 if (v.fits(i128)) break :bigint hashI128(v.to(i128) catch unreachable, false);
                 const str = try v.toString(allocator, 16, .upper);
                 defer allocator.free(str);
-                break :bigint std.hash.Wyhash.hash(0xCAFEBABEBADDC0DE, str);
+                break :bigint std.hash.Wyhash.hash(hash_seed, str);
             },
 
             inline .i64, .i32, .i16, .i8 => |v| @bitCast(@as(i64, @intCast(v))),
@@ -177,22 +166,19 @@ pub const Number = union(NumberType) {
                 // stability with ints
                 if (@trunc(v) == v) {
                     const T = numTypScalar(t);
-                    const uUpper: T = @floatFromInt(std.math.maxInt(u128));
 
                     if (v >= 0.0) {
-                        if (v <= uUpper) break :float hashU128(@intFromFloat(v), true);
+                        const upper: T = @floatFromInt(std.math.maxInt(u128));
+                        if (v <= upper) break :float hashU128(@intFromFloat(v), true);
                     } else {
                         const lower: T = @floatFromInt(std.math.minInt(i128));
-                        const upper: T = @floatFromInt(std.math.maxInt(i128));
-
-                        if (v >= lower and v <= upper)
-                            break :float hashI128(@intFromFloat(v), false);
+                        if (v >= lower) break :float hashI128(@intFromFloat(v), false);
                     }
 
                     // stability with bigints (may be slow)
                     const str = try allocPrint(allocator, "{d}", .{v});
                     defer allocator.free(str);
-                    break :float std.hash.Wyhash.hash(0xCAFEBABEBADDC0DE, str);
+                    break :float std.hash.Wyhash.hash(hash_seed, str);
                 }
 
                 const uTyp: NumberType = @enumFromInt(@intFromEnum(t) - 0x10);

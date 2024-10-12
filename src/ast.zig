@@ -4,8 +4,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Token = Lexer.Token;
 
-const value = @import("vm/value.zig");
-const Number = value.Number;
+const Number = @import("interp/value/number.zig").Number;
 
 // SOURCE FILE POSITIONS
 
@@ -43,35 +42,47 @@ pub const Block = std.ArrayList(BlockStatement);
 // EXPRESSIONS
 pub const Comparator = enum { eq, ne, gt, lt, gt_eq, lt_eq };
 
-pub const BoolOperator = enum { @"and", @"or", not };
+pub const Chainer = enum { @"and", @"or" };
 
-pub const MathOperator = enum {
-    sum,
-    sub,
-    div,
-    mul,
-    mod,
-    bw_ls,
-    bw_lrs,
-    bw_ars,
-    bw_and,
-    bw_or,
-    bw_not,
-    xor,
+pub const Operator = enum {
+    // zig fmt: off
+    sum, sub,
+    div, mul, mod,
+    ls, rls, ras,
+    bw_and, bw_or, bw_xor,
+    // zig fmt: on
 
     const Self = @This();
 
+    pub inline fn toString(op: Operator) []const u8 {
+        return switch (op) {
+            .sum => "+",
+            .sub => "-",
+
+            .div => "/",
+            .mul => "*",
+            .mod => "%",
+
+            .ls => "<<",
+            .rls => ">>",
+            .ras => ">>>",
+
+            .bw_and => "&",
+            .bw_or => "|",
+            .bw_xor => "^",
+        };
+    }
+
     pub inline fn fromSymbol(symbol: u8) ?Self {
         return switch (symbol) {
-            '+' => Self.sum,
-            '-' => Self.sub,
-            '/' => Self.div,
-            '*' => Self.mul,
-            '%' => Self.mod,
-            '&' => Self.bw_and,
-            '|' => Self.bw_or,
-            '~' => Self.bw_not,
-            '^' => Self.xor,
+            '+' => .sum,
+            '-' => .sub,
+            '/' => .div,
+            '*' => .mul,
+            '%' => .mod,
+            '&' => .bw_and,
+            '|' => .bw_or,
+            '^' => .bw_xor,
             else => null,
         };
     }
@@ -135,14 +146,16 @@ pub const Operand = union(enum) {
 pub const Expression = union(enum) {
     operation: *Operation,
     operand: *Operand,
+    logical_not: *Expression,
+    bitwise_not: *Expression,
 };
 
 pub const Operation = struct {
     operandl: Expression,
     op: union(enum) {
         cmp: Comparator,
-        bool: BoolOperator,
-        math: MathOperator,
+        math: Operator,
+        chain: Chainer,
     },
     operandr: Expression,
 };
@@ -183,7 +196,7 @@ pub const Variable = struct {
 // VARIABLE ASSIGNMENT
 pub const Assignment = struct {
     variable: NonLiteralOperand = undefined,
-    operator: ?MathOperator = null,
+    operator: ?Operator = null,
     expression: Expression = undefined,
 };
 

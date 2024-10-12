@@ -1,5 +1,5 @@
 const std = @import("std");
-const chm = @import("chm");
+const util = @import("../util.zig");
 
 pub const TypeDesc = union(enum) {
     builtin: BuiltinType,
@@ -97,36 +97,7 @@ pub const BuiltinType = enum(u8) {
     maybe = 0xFE, 
     any   = 0xFF,
 
-    pub const string_map = chm.ComptimeStringHashMap(BuiltinType, .{
-        .{ "bigint", .bigint },
-        .{ "i128",   .i128   },
-        .{ "i64",    .i64    },
-        .{ "i32",    .i32    },
-        .{ "i16",    .i16    },
-        .{ "i8",     .i8     },
-        .{ "u128",   .u128   },
-        .{ "u64",    .u64    },
-        .{ "u32",    .u32    },
-        .{ "u16",    .u16    },
-        .{ "u8",     .u8     },
-        .{ "f64",    .f64    },
-        .{ "f32",    .f32    },
-        .{ "f16",    .f16    },
-
-        .{ "int",   .int },
-        .{ "uint",  .uint },
-        .{ "float", .float },
-
-        .{ "number", .number },
-        .{ "string", .string },
-        .{ "bool",   .bool },
-        .{ "void",   .void },
-        .{ "type",   .type },
-        .{ "func",   .func },
-
-        .{ "maybe", .maybe },
-        .{ "any",   .any },
-    });
+    pub const string_map = util.mkStringMap(BuiltinType);
 };
 
 // zig fmt: on

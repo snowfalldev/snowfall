@@ -18,13 +18,11 @@ pub fn build(b: *std.Build) anyerror!void {
 
     const static_map = b.dependency("static-map", .{});
     const static_map_mod = static_map.module("static-map");
-    const comptime_hash_map = b.dependency("comptime_hash_map", .{});
-    const comptime_hash_map_mod = comptime_hash_map.module("comptime_hash_map");
 
     // MODULE
 
     const mod = b.addModule("helium", .{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -33,7 +31,6 @@ pub fn build(b: *std.Build) anyerror!void {
             .{ .name = "utftools", .module = utftools_mod },
 
             .{ .name = "static-map", .module = static_map_mod },
-            .{ .name = "chm", .module = comptime_hash_map_mod },
         },
     });
 

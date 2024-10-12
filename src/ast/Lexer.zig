@@ -1,34 +1,27 @@
 const std = @import("std");
-const log = @import("../log.zig");
-const util = @import("../util.zig");
-const ast = @import("../ast.zig");
-
 const Allocator = std.mem.Allocator;
-
-const Module = @import("../Module.zig");
-
-const Logger = @import("../log.zig").Logger;
-const value = @import("../vm/value.zig");
-const NumberType = value.NumberType;
-const @"type" = @import("../vm/type.zig");
-const BuiltinType = @"type".BuiltinType;
+const allocPrint = std.fmt.allocPrint;
+const parseUnsigned = std.fmt.parseUnsigned;
+const parseInt = std.fmt.parseInt;
+const parseFloat = std.fmt.parseFloat;
 
 const utftools = @import("utftools");
 const code_point = @import("code_point");
 const CodePoint = code_point.CodePoint;
 const GenCatData = @import("GenCatData");
 
-const allocPrint = std.fmt.allocPrint;
-const parseUnsigned = std.fmt.parseUnsigned;
-const parseInt = std.fmt.parseInt;
-const parseFloat = std.fmt.parseFloat;
+const Module = @import("../Module.zig");
+const Logger = @import("../log.zig").Logger;
+const NumberType = @import("../interp/value/number.zig").NumberType;
+const BuiltinType = @import("../interp/type.zig").BuiltinType;
 
+const util = @import("../util.zig");
 const getOptional = util.getOptional;
 const isNumberChar = util.isNumberChar;
 const isHexadecimalChar = util.isHexadecimalChar;
 const isLineSeparator = util.isLineSeparator;
-const containsString = util.containsString;
 
+const ast = @import("../ast.zig");
 const Pos = ast.Pos;
 const Span = ast.Span;
 
@@ -44,8 +37,8 @@ pub const Token = union(enum) {
 
     // other
     symbol: u21,
-    keyword: []const u8,
-    builtin_type: []const u8,
+    keyword: Keyword,
+    builtin_type: BuiltinType,
     identifier: []const u8,
     doc_comment: DocComment,
 
@@ -60,32 +53,65 @@ pub const Token = union(enum) {
         managed: bool = true,
     };
 
+    // zig fmt: off
+    pub const Keyword = enum {
+        as, // casting
+
+        @"and", @"or", // boolean operations
+
+        throw,    // raise error
+        @"try",   // try function which raises errors
+        @"catch", // catch error
+        assert,   // raise error if condition not true
+                  // in a function which doesn't throw errors, this will crash the program!
+
+        @"if",     // define conditional if statement
+        @"else",   // define conditional else statement
+        @"switch", // define switch statement
+
+        @"pub",   // publicize declaration
+        @"const", // declare constant variable
+        @"var",   // declare mutable variable
+
+        func,      // define function
+        @"return", // return from function
+        @"defer",  // execute statement when function returns
+        ref,       // get reference to param instead of copying
+
+        @"struct", // define struct
+        @"enum",   // define enum
+        @"union",  // define union
+        interface, // define interface
+
+        loop,        // define infinite loop
+        @"while",    // define while loop
+        @"for",      // define for loop
+        @"break",    // loop break
+        @"continue", // loop continue
+
+        mod, // define a module
+        use, // use a module
+
+        pub const string_map = util.mkStringMap(Keyword);
+    };
+    // zig fmt: on
+
     pub const DocComment = struct {
         buf: []const u8 = "",
         top_level: bool = false,
     };
 
-    // Convert from a string representing a basic token (if possible).
-    pub fn fromBasicString(string: []const u8) ?Token {
-        if (std.mem.eql(u8, string, "null")) {
-            return .null;
-        } else if (std.mem.eql(u8, string, "undefined")) {
-            return .undefined;
-        } else if (std.mem.eql(u8, string, "true")) {
-            return .{ .bool = true };
-        } else if (std.mem.eql(u8, string, "false")) {
-            return .{ .bool = false };
-        } else if (string.len > 0 and !isNumberChar(string[0])) {
-            if (containsString(&keywords, string)) {
-                return .{ .keyword = string };
-            } else if (BuiltinType.string_map.has(string)) {
-                return .{ .builtin_type = string };
-            } else {
-                return .{ .identifier = string };
-            }
-        }
-
-        return null;
+    // Convert from a word representing a token (if possible).
+    pub fn fromWord(string: []const u8) ?Token {
+        if (std.mem.eql(u8, string, "null")) return .null;
+        if (std.mem.eql(u8, string, "undefined")) return .undefined;
+        if (std.mem.eql(u8, string, "true")) return .{ .bool = true };
+        if (std.mem.eql(u8, string, "false")) return .{ .bool = false };
+        if (string.len > 0 and !isNumberChar(string[0])) {
+            if (Keyword.string_map.get(string)) |kw| return .{ .keyword = kw };
+            if (BuiltinType.string_map.get(string)) |t| return .{ .builtin_type = t };
+            return .{ .identifier = string };
+        } else return null;
     }
 
     // Write a token to a writer.
@@ -112,9 +138,9 @@ pub const Token = union(enum) {
                 try writer.writeAll("symbol: ");
                 try utftools.writeCodepointToUtf8(v, writer);
             },
+            .keyword => |v| try writer.print("keyword: {s}", .{@tagName(v)}),
+            .builtin_type => |v| try writer.print("built-in type: {s}", .{@tagName(v)}),
             .identifier => |v| try writer.print("identifier: {s}", .{v}),
-            .builtin_type => |v| try writer.print("built-in type: {s}", .{v}),
-            .keyword => |v| try writer.print("keyword: {s}", .{v}),
             .doc_comment => |v| {
                 try writer.print("doc comment: \"{s}\"", .{v.buf});
                 if (v.top_level) try writer.writeAll(" (top-level)");
@@ -204,49 +230,6 @@ inline fn isSymbol(char: u21) bool {
     return char == '.' or isSeparatingSymbol(char);
 }
 
-// zig fmt: off
-
-// All valid keywords.
-pub const keywords = [27][]const u8{
-    "as", // casting
-
-    "and", "or", // boolean operations
-    
-    "throw",  // raise error
-    "try",    // try function which raises errors
-    "catch",  // catch error
-    "assert", // raise error if condition not true
-              // in a function which doesn't throw errors, this will crash the program!
-    
-    "if",     // define conditional if statement
-    "else",   // define conditional else statement
-    "switch", // define switch statement
-    
-    "pub",   // publicize declaration
-    "const", // declare constant variable
-    "var",   // declare mutable variable
-    
-    "func",   // define function
-    "return", // return from function
-    "ref",    // get reference to param instead of copying
-    
-    "struct",    // define struct
-    "enum",      // define enum
-    "union",     // define union
-    "interface", // define interface
-    
-    "loop",     // define infinite loop
-    "while",    // define while loop
-    "for",      // define for loop
-    "break",    // loop break
-    "continue", // loop continue
-
-    "mod", // define a module
-    "use", // use a module
-};
-
-// zig fmt: on
-
 pub const State = enum { string, char, number, none };
 
 // the actual lexer
@@ -264,8 +247,8 @@ start: Pos = .{},
 iter: code_point.Iterator,
 gcd: GenCatData,
 current: CodePoint,
-basic: []const u8 = "",
-state: State = .none,
+word: []const u8 = "",
+basic: bool = true,
 
 logger: Logger(.lexer),
 failed: bool = false,
@@ -306,7 +289,8 @@ pub fn clear(self: *Self, free: bool) void {
 
     self.iter.i = 0;
     self.current = self.iter.next() orelse undefined;
-    self.state = .none;
+    self.word = "";
+    self.basic = true;
 }
 
 // Lexes the entire queue.
@@ -321,15 +305,15 @@ pub inline fn getLastToken(self: *Self) ?LocatedToken {
     return self.output.items[self.output.items.len - 1];
 }
 
-// Adds the current basic token to the output.
-pub fn addBasicToken(self: *Self, comptime symbol: bool) !void {
-    if (self.basic.len != 0) {
-        self.basic.ptr = @ptrCast(&self.data[self.start.raw]);
+// Adds the current word to the output.
+pub fn addWord(self: *Self, comptime symbol: bool) !void {
+    if (self.word.len != 0) {
+        self.word.ptr = @ptrCast(&self.data[self.start.raw]);
 
-        if (Token.fromBasicString(self.basic)) |token|
+        if (Token.fromWord(self.word)) |token|
             try self.output.append(.{ .span = .{ self.start, self.last }, .token = token });
 
-        self.basic.len = 0;
+        self.word.len = 0;
     }
 
     if (symbol) try self.output.append(.{
@@ -363,7 +347,7 @@ pub fn advance(self: *Self) !void {
             separators_this_line = 0;
         }
 
-        if (separators == 0 and self.state == .none) try self.addBasicToken(false);
+        if (separators == 0 and self.basic) try self.addWord(false);
 
         self.current = self.iter.next() orelse undefined;
     }
@@ -388,7 +372,7 @@ pub inline fn finished(self: Self) bool {
 }
 
 inline fn isSeparator(self: *Self, char: u21) bool {
-    return isLineSeparator(char) or (self.state == .none and self.gcd.isSeparator(self.current.code));
+    return isLineSeparator(char) or (self.basic and self.gcd.isSeparator(self.current.code));
 }
 
 inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
@@ -397,7 +381,9 @@ inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Spa
 }
 
 inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
-    self.state = .number;
+    self.basic = false;
+    defer self.basic = true;
+
     var span = Span{ self.pos, self.pos };
     var out = Token.Number{};
 
@@ -504,7 +490,6 @@ inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
     }
 
     try self.output.append(.{ .span = span, .token = .{ .number = out } });
-    self.state = .none;
 }
 
 inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
@@ -605,7 +590,7 @@ pub fn next(self: *Self) !void {
     const initial_len = self.output.items.len;
 
     while (!self.finished() and initial_len == self.output.items.len) : (try self.advance()) {
-        if (self.basic.len == 0) self.start = self.pos;
+        if (self.word.len == 0) self.start = self.pos;
         var explicit_sign_number = (self.current.code == '+' or self.current.code == '-') and isNumberChar(self.peek().code);
 
         // Explicitly +/- numbers; we must ensure the last token was not an expression.
@@ -615,12 +600,14 @@ pub fn next(self: *Self) !void {
             explicit_sign_number = explicit_sign_number and !last_token.?.token.isExpression();
         }
 
-        if (self.basic.len == 0 and (isNumberChar(self.current.code) or explicit_sign_number))
+        if (self.word.len == 0 and (isNumberChar(self.current.code) or explicit_sign_number))
             return self.tokenizeNumber(explicit_sign_number);
 
         switch (self.current.code) {
             '"' => { // String parser.
-                self.state = .string;
+                self.basic = false;
+                defer self.basic = true;
+
                 const start = self.pos;
                 try self.advance();
                 const inner_start = self.pos.raw;
@@ -651,11 +638,11 @@ pub fn next(self: *Self) !void {
                     .span = .{ start, self.pos },
                     .token = .{ .string = out },
                 });
-
-                self.state = .none;
             },
             '\'' => { // Character parser.
-                self.state = .char;
+                self.basic = false;
+                defer self.basic = true;
+
                 const start = self.pos;
                 var char: ?u21 = null;
 
@@ -680,8 +667,6 @@ pub fn next(self: *Self) !void {
                     .span = .{ start, self.pos },
                     .token = .{ .char = char orelse 0xFFFD },
                 });
-
-                self.state = .none;
             },
             // Division or comment.
             '/' => if (self.peek().code == '/' or self.peek().code == '*') {
@@ -718,7 +703,7 @@ pub fn next(self: *Self) !void {
                     else => unreachable,
                 }
 
-                if (out.top_level and (self.output.items.len != 0 or self.basic.len != 0))
+                if (out.top_level and (self.output.items.len != 0 or self.word.len != 0))
                     return self.fatal("top-level doc comment must be at the start of the file.", .{}, span, null);
 
                 out.buf = self.data[start.raw .. span[1].raw + 1];
@@ -727,10 +712,10 @@ pub fn next(self: *Self) !void {
                     .span = span,
                     .token = .{ .doc_comment = out },
                 });
-            } else try self.addBasicToken(true), // Symbol.
+            } else try self.addWord(true), // Symbol.
             else => if (!isSymbol(self.current.code)) {
-                self.basic.len +%= self.current.len;
-            } else try self.addBasicToken(true), // Symbol.
+                self.word.len +%= self.current.len;
+            } else try self.addWord(true), // Symbol.
         }
     }
 }
