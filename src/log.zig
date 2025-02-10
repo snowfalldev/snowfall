@@ -9,7 +9,7 @@ const ast = @import("ast.zig");
 const Pos = ast.Pos;
 const Span = ast.Span;
 
-const util = @import("util.zig");
+const unicode = @import("unicode.zig");
 
 pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
     return struct {
@@ -116,7 +116,7 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
 
             const line_start_pos = s[0].raw - s[0].col;
             var line_end_pos: usize = line_start_pos;
-            while (line_end_pos < d.len and !util.isLineSeparator(d[line_end_pos])) line_end_pos += 1;
+            while (line_end_pos < d.len and !unicode.isNewLine(d[line_end_pos])) line_end_pos += 1;
 
             var out = std.ArrayList(u8).init(self.allocator);
             errdefer out.deinit();

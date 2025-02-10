@@ -21,9 +21,13 @@ pub const Pos = struct {
             .col = pos.col + 1,
         };
     }
+
+    pub inline fn format(self: Pos, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try std.fmt.format(writer, "{}:{}", .{ self.row, self.col });
+    }
 };
 
-pub const Span = struct { Pos = .{}, Pos = .{} };
+pub const Span = struct { Pos, Pos };
 
 // ABSTRACT SYNTAX TREE
 

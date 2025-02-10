@@ -7,14 +7,8 @@ pub fn build(b: *std.Build) anyerror!void {
 
     // DEPENDENCIES
 
-    const jemalloc = b.dependency("jemalloc", .{});
-    const jemalloc_mod = jemalloc.module("jemalloc");
-
     const zg = b.dependency("zg", .{});
-    const code_point_mod = zg.module("code_point");
-    const gencatdata_mod = zg.module("GenCatData");
-    const utftools = b.dependency("utftools", .{});
-    const utftools_mod = utftools.module("utftools");
+    const grapheme_mod = zg.module("grapheme");
 
     const static_map = b.dependency("static-map", .{});
     const static_map_mod = static_map.module("static-map");
@@ -26,9 +20,7 @@ pub fn build(b: *std.Build) anyerror!void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "code_point", .module = code_point_mod },
-            .{ .name = "GenCatData", .module = gencatdata_mod },
-            .{ .name = "utftools", .module = utftools_mod },
+            .{ .name = "grapheme", .module = grapheme_mod },
 
             .{ .name = "static-map", .module = static_map_mod },
         },
@@ -45,8 +37,7 @@ pub fn build(b: *std.Build) anyerror!void {
     });
 
     exe.root_module.addImport("helium", mod);
-    exe.root_module.addImport("jemalloc", jemalloc_mod);
-    exe.linkLibC();
+    //exe.linkLibC();
 
     b.installArtifact(exe);
 

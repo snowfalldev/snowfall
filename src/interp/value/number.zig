@@ -5,7 +5,6 @@ const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
 
 const util = @import("../../util.zig");
-const code_point = @import("code_point");
 
 const @"type" = @import("../type.zig");
 const BuiltinType = @"type".BuiltinType;
