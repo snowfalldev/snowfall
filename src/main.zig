@@ -2,21 +2,25 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const helium = @import("helium");
-const Module = helium.Module;
+const Engine = helium.Engine;
 
 pub fn main() !void {
     const data = @embedFile("testfile.he");
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const allocator = std.heap.smp_allocator;
 
-    var mod = try Module.init(data, "main", std.heap.page_allocator);
-    defer mod.deinit();
-    const tokens = try mod.finishLexer();
+    //var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    //defer arena.deinit();
+    //const allocator = arena.allocator();
 
-    for (tokens) |token| {
-        const string = try token.token.toString(allocator);
+    var engine = Engine.init(allocator);
+    var module = try engine.registerScript("main", data);
+    const tokens = try module.finishLexer();
+
+    defer engine.deinit();
+
+    for (tokens.items) |token| {
+        const string = try token.token.toDebugString(allocator);
         defer allocator.free(string);
         std.debug.print(" - {{ {}..{}, {s} }}\n", .{ token.span[0], token.span[1], string });
     }

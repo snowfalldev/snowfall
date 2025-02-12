@@ -1,5 +1,7 @@
 const builtin = @import("builtin");
 
+const Engine = @import("Engine.zig");
+
 const std = @import("std");
 const unicode = std.unicode;
 const Allocator = std.mem.Allocator;
@@ -28,7 +30,7 @@ const DataStorage = struct {
 };
 
 arena: *Arena,
-allocator: Allocator,
+engine: *Engine,
 
 data: DataStorage,
 name: DataStorage,
@@ -38,12 +40,12 @@ deps: std.ArrayList(*Self),
 
 lexer: Lexer,
 
-inline fn initInner(src: []const u8, name: []const u8, arena: *Arena) !*Self {
+inline fn initInner(engine: *Engine, name: []const u8, src: []const u8, arena: *Arena) !*Self {
     const allocator = arena.allocator();
     var mod = try allocator.create(Self);
     mod.* = .{
         .arena = arena,
-        .allocator = allocator,
+        .engine = engine,
 
         .data = try DataStorage.fromUtf8(src, allocator),
         .name = try DataStorage.fromUtf8(name, allocator),
@@ -58,16 +60,16 @@ inline fn initInner(src: []const u8, name: []const u8, arena: *Arena) !*Self {
     return mod;
 }
 
-pub fn init(src: []const u8, name: []const u8, allocator: Allocator) !*Self {
-    const arena = try allocator.create(Arena);
-    arena.* = Arena.init(allocator);
-    return Self.initInner(src, name, arena);
+pub fn init(engine: *Engine, name: []const u8, src: []const u8) !*Self {
+    const arena = try engine.allocator.create(Arena);
+    arena.* = Arena.init(engine.allocator);
+    return Self.initInner(engine, name, src, arena);
 }
 
-pub fn initFile(path: []const u8, allocator: Allocator) !*Self {
-    const arena = try allocator.create(Arena);
-    arena.* = Arena.init(allocator);
-    const alloc = arena.allocator();
+pub fn initFile(engine: *Engine, path: []const u8) !*Self {
+    const arena = try engine.allocator.create(Arena);
+    arena.* = Arena.init(engine.allocator);
+    const allocator = arena.allocator();
 
     var file: std.fs.File = undefined;
     if (!std.fs.path.isAbsolute(path)) {
@@ -75,9 +77,9 @@ pub fn initFile(path: []const u8, allocator: Allocator) !*Self {
         file = cwd.openFile(path, .{});
     } else file = std.fs.openFileAbsolute(path, .{});
 
-    const data = file.readToEndAlloc(alloc, std.math.maxInt(usize));
+    const data = file.readToEndAlloc(allocator, std.math.maxInt(usize));
 
-    const self = try Self.initInner(data, path, arena);
+    const self = try Self.initInner(engine, path, data, arena);
     self.data.managed = true;
     return self;
 }
@@ -89,6 +91,7 @@ pub inline fn deinit(self: *Self) void {
     allocator.destroy(arena);
 }
 
-pub inline fn finishLexer(self: *Self) ![]ast.Lexer.LocatedToken {
-    return self.lexer.finish();
+pub inline fn finishLexer(self: *Self) !*std.ArrayList(ast.Lexer.LocatedToken) {
+    try self.lexer.finish();
+    return &self.lexer.output;
 }

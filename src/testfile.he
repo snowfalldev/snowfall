@@ -7,6 +7,7 @@ pub func testFunc(str: string, num: number) void {
   var a = +43;
   a += b-2;
   std.printf("%s %d\n", str, a);
+  std.print("à́̀́̀́̀́̀́̀́̀́̀");
 }
 
 /*
@@ -21,12 +22,13 @@ pub func main() void {
   testFunc(test, -1);
   const um = '\n';
   const um2 = 'n';
-  std.print('\u{1F480}');
-  std.println(" <- skull\n\u{1F480}\u{1F480}💀 <- oh it's here thrice");
   std.println("Hello, world!");
-  std.printf("1 + 2 = %d\n", 3);
-  std.printf("0.1 * 5.5 = %d\n", 0.55);
-  std.printf("3 + 1 = %d\n", 4u32);
-  std.printf("0.2 * 3.3 = %d\n", 6.6e-1f16);
+  std.print('\u{1F480}');
+  std.print(" <- skull\n\u{1F480}\u{1F480}💀 <- oh it's here thrice\n");
+  std.println(`1 + 2 = {1 + 2}`);
+  std.println("0.1 * 5.5 = ", 0.55);
+  std.println(`3 + 1 = {4u32}`);
+  std.println("0.2 * 3.3 = ", 6.6e-1f16);
+  std.println(`squiggly brackets: \{}`);
   @panic("welp");
 }

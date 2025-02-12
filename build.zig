@@ -37,7 +37,6 @@ pub fn build(b: *std.Build) anyerror!void {
     });
 
     exe.root_module.addImport("helium", mod);
-    //exe.linkLibC();
 
     b.installArtifact(exe);
 

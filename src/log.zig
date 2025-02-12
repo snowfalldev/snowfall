@@ -3,7 +3,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
 
-const Module = @import("Module.zig");
+const Script = @import("Script.zig");
 
 const ast = @import("ast.zig");
 const Pos = ast.Pos;
@@ -14,7 +14,7 @@ const unicode = @import("unicode.zig");
 pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
     return struct {
         allocator: Allocator,
-        mod: ?*Module,
+        script: ?*Script,
         errs: Messages,
         warns: Messages,
         infos: Messages,
@@ -35,10 +35,10 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
             }
         };
 
-        pub fn init(allocator: Allocator, mod: ?*Module) Self {
+        pub fn init(allocator: Allocator, script: ?*Script) Self {
             return .{
                 .allocator = allocator,
-                .mod = mod,
+                .script = script,
                 .errs = Messages.init(allocator),
                 .warns = Messages.init(allocator),
                 .infos = Messages.init(allocator),
@@ -96,7 +96,7 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
             errdefer out.deinit();
             if (builtin.mode == .Debug) try out.appendSlice("[" ++ @tagName(scope));
 
-            if (self.mod == null or (self.mod != null and span == null)) {
+            if (self.script == null or (self.script != null and span == null)) {
                 if (builtin.mode == .Debug) try out.append(']');
                 return out.toOwnedSlice();
             }
@@ -104,15 +104,15 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
             try if (builtin.mode != .Debug) out.append('[') else out.appendSlice(" | ");
 
             const writer = out.writer();
-            try writer.print("{s}", .{self.mod.?.name.buf});
+            try writer.print("{s}", .{self.script.?.name.buf});
             try if (span) |s| writer.print(" ({}:{})]", .{ s[0].row + 1, s[0].col + 1 }) else out.append(']');
             return out.toOwnedSlice();
         }
 
         fn dataString(self: Self, span: ?Span, hi: ?Pos) ![]const u8 {
-            if (self.mod == null or span == null) return self.allocator.alloc(u8, 0);
+            if (self.script == null or span == null) return self.allocator.alloc(u8, 0);
             const s = span.?;
-            const d = self.mod.?.data.buf;
+            const d = self.script.?.data.buf;
 
             const line_start_pos = s[0].raw - s[0].col;
             var line_end_pos: usize = line_start_pos;

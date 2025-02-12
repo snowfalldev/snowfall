@@ -9,9 +9,9 @@ const Number = @import("interp/value/number.zig").Number;
 // SOURCE FILE POSITIONS
 
 pub const Pos = struct {
-    raw: u32 = 0,
-    row: u32 = 0,
-    col: u32 = 0,
+    raw: usize = 0,
+    row: usize = 0,
+    col: usize = 0,
 
     // Returns the position after this one.
     pub inline fn next(pos: Pos) Pos {
@@ -34,7 +34,6 @@ pub const Span = struct { Pos, Pos };
 // STATEMENTS
 pub const BlockStatement = union(enum) {
     call: Call,
-    builtin_call: BuiltinCall,
     function: Function,
     constant: Constant,
     variable: Variable,
@@ -43,12 +42,105 @@ pub const BlockStatement = union(enum) {
 
 pub const Block = std.ArrayList(BlockStatement);
 
+// OPERANDS
+
+pub const LiteralOperand = union(enum) {
+    null,
+    undefined,
+    bool: bool,
+    char: u21,
+    string: String,
+    number: Number,
+
+    const Self = @This();
+
+    pub inline fn fromToken(token: Token) ?Self {
+        return switch (token) {
+            Token.null => Self.null,
+            Token.undefined => Self.undefined,
+            Token.bool => |b| .{ .bool = b },
+            Token.char => |char| .{ .char = char },
+            Token.string => |string| .{ .string = string.data },
+            Token.number => |number| .{ .number = number },
+            else => null,
+        };
+    }
+};
+
+pub const String = struct {
+    text: []const u8 = "",
+    managed: bool = false,
+};
+
+pub const Template = struct {
+    strings: []String,
+    exprs: []Expression,
+};
+
+pub const NonLiteralOperand = union(enum) {
+    template: Template,
+    identifier: []const u8,
+    field_access: FieldAccess,
+    index_access: IndexAccess,
+    call: Call,
+
+    const Self = @This();
+
+    pub inline fn fromToken(token: Token) ?Self {
+        return if (token == Token.identifier) .{ .identifier = token.identifier } else null;
+    }
+};
+
+pub const Operand = union(enum) {
+    literal: LiteralOperand,
+    non_literal: NonLiteralOperand,
+
+    const Self = @This();
+
+    pub fn fromToken(token: Token) ?Self {
+        if (LiteralOperand.fromToken(token)) |e| {
+            return .{ .literal = e };
+        } else if (NonLiteralOperand.fromToken(token)) |e| {
+            return .{ .non_literal = e };
+        } else return null;
+    }
+};
+
 // EXPRESSIONS
-pub const Comparator = enum { eq, ne, gt, lt, gt_eq, lt_eq };
 
-pub const Chainer = enum { @"and", @"or" };
+pub const Expression = union(enum) {
+    operation: *Operation,
+    operand: *Operand,
+    logical_not: *Expression,
+    bitwise_not: *Expression,
+};
 
-pub const Operator = enum {
+// OPERATIONS
+
+pub const Comparator = enum(u8) {
+    // zig fmt: off
+    eq, ne,
+    gt, lt,
+    gt_eq, lt_eq,
+    // zig fmt: on
+
+    pub inline fn toString(op: Operator) []const u8 {
+        return switch (op) {
+            .eq => "==",
+            .ne => "!=",
+
+            .gt => ">",
+            .lt => "<",
+
+            .gt_eq => ">=",
+            .lt_eq => "<=",
+        };
+    }
+};
+
+pub const Chainer = enum(u8) { @"and", @"or" };
+
+pub const Operator = enum(u8) {
     // zig fmt: off
     sum, sub,
     div, mul, mod,
@@ -92,76 +184,14 @@ pub const Operator = enum {
     }
 };
 
-// EXPRESSIONS
-pub const LiteralOperand = union(enum) {
-    null,
-    undefined,
-    bool: bool,
-    char: u21,
-    string: []const u8,
-    number: Number,
-
-    const Self = @This();
-
-    pub inline fn fromToken(token: Token) ?Self {
-        return switch (token) {
-            Token.null => Self.null,
-            Token.undefined => Self.undefined,
-            Token.bool => |b| .{ .bool = b },
-            Token.char => |char| .{ .char = char },
-            Token.string => |string| .{ .string = string },
-            Token.number => |number| .{ .number = number },
-            else => null,
-        };
-    }
-};
-
-pub const NonLiteralOperand = union(enum) {
-    identifier: []const u8,
-    field_access: FieldAccess,
-    index_access: IndexAccess,
-    call: Call,
-    builtin_call: BuiltinCall,
-
-    const Self = @This();
-
-    pub inline fn fromToken(token: Token) ?Self {
-        return if (token == Token.identifier) .{ .identifier = token.identifier } else null;
-    }
-};
-
-pub const Operand = union(enum) {
-    literal: LiteralOperand,
-    non_literal: NonLiteralOperand,
-
-    const Self = @This();
-
-    pub fn fromToken(token: Token) ?Self {
-        if (LiteralOperand.fromToken(token)) |e| {
-            return .{ .literal = e };
-        } else if (NonLiteralOperand.fromToken(token)) |e| {
-            return .{ .non_literal = e };
-        } else return null;
-    }
-};
-
-// EXPRESSIONS
-
-pub const Expression = union(enum) {
-    operation: *Operation,
-    operand: *Operand,
-    logical_not: *Expression,
-    bitwise_not: *Expression,
-};
-
 pub const Operation = struct {
-    operandl: Expression,
+    lhs: Expression,
     op: union(enum) {
         cmp: Comparator,
         math: Operator,
         chain: Chainer,
     },
-    operandr: Expression,
+    rhs: Expression,
 };
 
 // TYPES
@@ -228,14 +258,8 @@ pub const FunctionDefinition = struct {
     public: bool = false,
 };
 
-// FUNCTION CALLS
 pub const Call = struct {
     callee: *Operand = undefined,
-    args: std.ArrayList(Expression) = undefined,
-};
-
-pub const BuiltinCall = struct {
-    callee: []const u8 = "",
     args: std.ArrayList(Expression) = undefined,
 };
 

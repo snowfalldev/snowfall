@@ -35,28 +35,31 @@ pub fn codepointFromUtf8(in: []const u8) !struct { u21, usize } {
 }
 
 // based on std.unicode.{utf8CodepointSequenceLength, utf8Encode}
-pub fn writeCodepointToUtf8(cp: u21, writer: anytype) !void {
-    if (cp < 0x80) {
-        try writer.writeByte(@as(u8, @intCast(cp)));
-    } else if (cp < 0x800) {
-        try writer.writeByte(@as(u8, @intCast(0b11000000 | (cp >> 6))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (cp & 0b111111))));
-    } else if (cp < 0x10000) {
-        if (0xd800 <= cp and cp <= 0xdfff) return error.CannotEncodeSurrogateHalf;
-        try writer.writeByte(@as(u8, @intCast(0b11100000 | (cp >> 12))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((cp >> 6) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (cp & 0b111111))));
-    } else if (cp < 0x110000) {
-        try writer.writeByte(@as(u8, @intCast(0b11110000 | (cp >> 18))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((cp >> 12) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((cp >> 6) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (cp & 0b111111))));
+pub fn writeCodepointToUtf8(codepoint: u21, writer: anytype) !void {
+    if (codepoint < 0x80) {
+        try writer.writeByte(@as(u8, @intCast(codepoint)));
+    } else if (codepoint < 0x800) {
+        try writer.writeByte(@as(u8, @intCast(0b11000000 | (codepoint >> 6))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (codepoint & 0b111111))));
+    } else if (codepoint < 0x10000) {
+        if (0xd800 <= codepoint and codepoint <= 0xdfff) return error.CannotEncodeSurrogateHalf;
+        try writer.writeByte(@as(u8, @intCast(0b11100000 | (codepoint >> 12))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((codepoint >> 6) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (codepoint & 0b111111))));
+    } else if (codepoint < 0x110000) {
+        try writer.writeByte(@as(u8, @intCast(0b11110000 | (codepoint >> 18))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((codepoint >> 12) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((codepoint >> 6) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (codepoint & 0b111111))));
     } else {
         return error.CodepointTooLarge;
     }
 }
 
 // CHARACTER CATEGORIZATION
+
+// Grapheme data + the first codepoint
+const Char = struct { code: u21, len: u8, offset: u32 };
 
 // Does this character function as some gap in text?
 pub fn isSeparator(code: u21) bool {

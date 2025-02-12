@@ -1,2 +1,2 @@
-pub const Module = @import("Module.zig");
-pub const Helium = @import("Helium.zig");
+pub const Script = @import("Script.zig");
+pub const Engine = @import("Engine.zig");

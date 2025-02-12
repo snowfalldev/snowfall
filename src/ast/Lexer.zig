@@ -7,7 +7,7 @@ const parseFloat = std.fmt.parseFloat;
 
 const grapheme = @import("grapheme");
 
-const Module = @import("../Module.zig");
+const Script = @import("../Script.zig");
 const Logger = @import("../log.zig").Logger;
 const NumberType = @import("../interp/value/number.zig").NumberType;
 const BuiltinType = @import("../interp/type.zig").BuiltinType;
@@ -15,8 +15,6 @@ const BuiltinType = @import("../interp/type.zig").BuiltinType;
 const util = @import("../util.zig");
 
 const unicode = @import("../unicode.zig");
-const isCrOrLf = unicode.isCrOrLf;
-const isLineSep = unicode.isLineSep;
 const isNewLine = unicode.isNewLine;
 const isNumberChar = unicode.isNumber;
 const isHexadecimalChar = unicode.isHexadecimal;
@@ -49,8 +47,10 @@ pub const Token = union(enum) {
     };
 
     pub const String = struct {
-        text: []const u8 = "",
-        managed: bool = true,
+        data: ast.String = .{},
+        formatting: ?struct {
+            end: bool = false,
+        } = null,
     };
 
     // zig fmt: off
@@ -89,8 +89,7 @@ pub const Token = union(enum) {
         @"break",    // loop break
         @"continue", // loop continue
 
-        mod, // define a module
-        use, // use a module
+        import, // import a script
 
         pub const string_map = util.mkStringMap(Keyword);
     };
@@ -130,8 +129,13 @@ pub const Token = union(enum) {
                 if (v.typ) |t| try writer.print(" ({s})", .{@tagName(t)});
             },
             .string => |v| {
-                try writer.print("string: \"{s}\"", .{v.text});
-                if (v.managed) try writer.writeAll(" (managed)");
+                try writer.print("string: \"{s}\"", .{v.data.text});
+                if (v.data.managed) try writer.writeAll(" (managed)");
+                if (v.formatting) |formatting| {
+                    try writer.writeAll(" (");
+                    if (formatting.end) try writer.writeAll("last ");
+                    try writer.writeAll("format segment)");
+                }
             },
 
             .symbol => |v| {
@@ -148,8 +152,8 @@ pub const Token = union(enum) {
         };
     }
 
-    // Convert a token to string representation.
-    pub inline fn toString(self: Token, allocator: Allocator) ![]const u8 {
+    // Convert a token to string representation. Intended for debugging.
+    pub inline fn toDebugString(self: Token, allocator: Allocator) ![]const u8 {
         var arraylist = std.ArrayList(u8).init(allocator);
         try self.writeDebug(arraylist.writer());
         return arraylist.toOwnedSlice();
@@ -163,19 +167,21 @@ pub const Token = union(enum) {
                 else => false,
             },
 
+            .keyword,
+            .doc_comment,
+            => false,
+
             else => true,
         };
     }
 };
 
 pub const LocatedToken = struct { span: Span, token: Token };
-pub const Tokens = std.ArrayList(LocatedToken);
 
-pub fn deinitTokens(tokens: []LocatedToken, allocator: Allocator) void {
-    for (tokens) |token|
-        if (token.token == .string and token.token.string.managed)
-            allocator.free(token.token.string.buf);
-}
+pub const State = enum { string, char, number, none };
+
+// Grapheme data + the first codepoint
+const Char = struct { code: u21, len: u8, offset: u32 };
 
 inline fn isSymbol(char: u21, comptime dot: bool) bool {
     return switch (char) {
@@ -210,18 +216,13 @@ inline fn isSymbol(char: u21, comptime dot: bool) bool {
     };
 }
 
-pub const State = enum { string, char, number, none };
-
-// Grapheme data + the first codepoint
-const Char = struct { code: u21, len: u8, offset: u32 };
-
 // the actual lexer
 
 allocator: Allocator,
 
-output: Tokens,
+output: std.ArrayList(LocatedToken),
 
-mod: *Module,
+script: *Script,
 data: []const u8,
 pos: Pos = .{},
 last: Pos = .{},
@@ -231,6 +232,7 @@ iter: grapheme.Iterator,
 buf: struct { Char, ?Char } = .{ undefined, null },
 word: []const u8 = "",
 basic: bool = true,
+fmt_string: bool = false,
 
 logger: Logger(.lexer),
 failed: bool = false,
@@ -238,17 +240,19 @@ failed: bool = false,
 const Self = @This();
 
 // Initializes a new lexer.
-pub fn init(mod: *Module) !Self {
-    const gd = try grapheme.GraphemeData.init(mod.allocator);
-    const iter = grapheme.Iterator.init(mod.data.buf, &gd);
+pub fn init(script: *Script) !Self {
+    const allocator = script.arena.allocator();
+
+    const gd = try grapheme.GraphemeData.init(allocator);
+    const iter = grapheme.Iterator.init(script.data.buf, &gd);
 
     var lexer = Self{
-        .allocator = mod.allocator,
-        .output = Tokens.init(mod.allocator),
-        .mod = mod,
-        .data = mod.data.buf,
+        .allocator = allocator,
+        .output = std.ArrayList(LocatedToken).init(allocator),
+        .script = script,
+        .data = script.data.buf,
         .iter = iter,
-        .logger = Logger(.lexer).init(mod.allocator, mod),
+        .logger = Logger(.lexer).init(allocator, script),
     };
 
     try lexer.initialRead();
@@ -258,8 +262,8 @@ pub fn init(mod: *Module) !Self {
 // De-initializes the lexer.
 // This should only be run after the output of the lexer is done being used.
 pub fn deinit(self: *Self) void {
-    self.iter.data.deinit();
     self.output.deinit();
+    self.iter.data.deinit();
     self.logger.deinit();
 }
 
@@ -285,9 +289,8 @@ pub fn reset(self: *Self, free: bool) void {
 }
 
 // Lexes the entire queue.
-pub inline fn finish(self: *Self) ![]LocatedToken {
+pub inline fn finish(self: *Self) !void {
     while (!self.finished()) try self.next();
-    return self.output.toOwnedSlice();
 }
 
 // Returns the last token the lexer outputted.
@@ -321,16 +324,31 @@ inline fn readgc(self: Self, gc: ?grapheme.Grapheme) !?Char {
     } else null;
 }
 
-// Moves the lexer position, and sets the current and next characters.
+// Returns true if we've hit EOF.
+inline fn advanceRead(self: *Self) !bool {
+    self.buf[0] = self.buf[1] orelse {
+        // no next char, we're done
+        self.pos.raw = self.data.len;
+        self.pos.col += 1;
+        return true;
+    };
+
+    self.buf[1] = try self.readgc(self.iter.next());
+    return false;
+}
+
+// Advances the lexer position.
 // Skips separator characters.
 fn advance(self: *Self) !void {
+    if (self.finished()) return error.UnexpectedEOF;
+
     if (self.buf[1]) |next_char| {
         self.buf[0] = next_char;
     } else {
         // no next char, we're done
         // make sure we know we are
         if (!self.finished()) {
-            self.pos.raw += 1;
+            self.pos.raw = self.data.len;
             self.pos.col += 1;
         }
 
@@ -338,7 +356,7 @@ fn advance(self: *Self) !void {
     }
 
     self.last = self.pos;
-    self.pos.col += self.buf[0].len;
+    self.pos.col += 1;
 
     self.buf[1] = try self.readgc(self.iter.next());
 
@@ -347,28 +365,22 @@ fn advance(self: *Self) !void {
 
         while (isSepInternal(self.buf[0].code, true)) {
             const code1 = self.buf[0].code;
-
             if (isNewLine(code1)) {
                 self.pos.row += 1;
                 self.pos.col = 0;
-            } else self.pos.col += self.buf[0].len;
+            } else self.pos.col += 1;
 
-            self.buf[0] = self.buf[1] orelse break;
-            self.buf[1] = try self.readgc(self.iter.next());
+            if (try self.advanceRead()) return;
 
             const code2 = self.buf[0].code;
-
             if ((code1 == '\r' and code2 == '\n') or
                 (code1 == '\n' and code2 == '\r'))
             {
                 // encountered CRLF or LFCR, skip another character
                 // this allows us to treat these as one new line
-                self.buf[0] = self.buf[1] orelse break;
-                self.buf[1] = try self.readgc(self.iter.next());
+                if (try self.advanceRead()) return;
             }
         }
-
-        self.start = self.pos;
     }
 
     self.pos.raw = self.buf[0].offset;
@@ -391,7 +403,7 @@ inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Spa
     self.failed = true;
 }
 
-inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
+inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     self.basic = false;
     defer self.basic = true;
 
@@ -416,10 +428,10 @@ inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
 
     var state = NumberType.u64;
     var exponent_reached = false;
-    var sign_reached = false;
-    var explicit_type_char: ?Char = null;
+    var exp_sign_reached = false;
+    var type_char: ?Char = null;
 
-    if (explicit_sign_number) {
+    if (signed) {
         state = NumberType.i64;
         try self.advance();
     }
@@ -430,7 +442,7 @@ inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
             '0'...'9', '_' => {},
             'f' => continue :num if (out.base == 10) 'i' else 'F',
             'n', 'i', 'u' => {
-                explicit_type_char = self.buf[0];
+                type_char = self.buf[0];
                 break;
             },
             'a'...'d', 'A'...'D', 'F' => if (out.base != 16)
@@ -445,9 +457,9 @@ inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
                 else => return self.fatal("hex char in base {} number.", .{out.base}, span, self.pos),
             },
             '+', '-' => if (exponent_reached) {
-                if (sign_reached) break;
-                sign_reached = true;
-            } else unreachable,
+                if (exp_sign_reached) break;
+                exp_sign_reached = true;
+            } else break,
             '.' => {
                 if (state == NumberType.f64 or out.base != 10) break;
                 // if character after . in number is not a number
@@ -467,22 +479,22 @@ inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
     }
 
     out.buf = self.data[after_base..self.pos.raw];
-    var explicit_type_span = Span{ self.pos, self.pos };
+    var type_span = Span{ self.pos, self.pos };
     var err = false;
 
-    if (explicit_type_char) |char| get_type: {
+    if (type_char) |char| get_type: {
         while (!self.finished()) {
             if (isSymbol(self.buf[0].code, true) or self.isSeparator(self.buf[0].code)) break;
-            explicit_type_span[1] = self.pos;
+            type_span[1] = self.pos;
             try self.advance();
         }
 
-        const type_string = self.data[explicit_type_span[0].raw..self.pos.raw];
+        const type_string = self.data[type_span[0].raw..self.pos.raw];
 
         if (type_string.len > 1) {
             out.typ = NumberType.string_map.get(type_string);
             if (out.typ == null) {
-                try self.logger.err("unknown type.", .{}, explicit_type_span, null);
+                try self.logger.err("unknown type.", .{}, type_span, null);
                 err = true;
                 break :get_type;
             }
@@ -494,17 +506,17 @@ inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
             else => unreachable,
         };
 
-        span[1] = explicit_type_span[1];
+        span[1] = type_span[1];
 
         if ((char.code == 'i' or char.code == 'n') and state == .f64) {
-            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, span, explicit_type_span[0]);
+            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, span, type_span[0]);
             err = true;
         } else if (char.code == 'u') {
             if (state == .i64 and out.buf[0] == '-') {
-                try self.logger.err("unsigned integers cannot be negative.", .{}, span, explicit_type_span[0]);
+                try self.logger.err("unsigned integers cannot be negative.", .{}, span, type_span[0]);
                 err = true;
             } else if (state == .f64) {
-                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, span, explicit_type_span[0]);
+                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, span, type_span[0]);
                 err = true;
             }
         }
@@ -513,29 +525,25 @@ inline fn tokenizeNumber(self: *Self, explicit_sign_number: bool) !void {
     try self.output.append(.{ .span = span, .token = .{ .number = out } });
 }
 
-inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
-    return switch (self.buf[1].?.code) {
-        'n', 'r', 't', '\\', exit => {
-            try self.advance();
-            return switch (self.buf[0].code) {
+inline fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
+    const esc_seq_start = self.pos;
+    try self.advance();
+
+    switch (self.buf[0].code) {
+        'n', 'r', 't', '\\', exit => |esc| {
+            return switch (esc) {
                 'n' => '\n',
                 'r' => '\r',
                 't' => '\t',
-                '\\' => '\\',
-                exit => exit,
-                else => unreachable,
+                else => esc,
             };
         },
+        '{' => if (exit == '`') return '{',
         'x' => {
-            try self.advance(); // Advance past '\'.
             try self.advance(); // Advance past 'x'.
 
-            if (self.data.len <= self.pos.raw + 1) {
-                while (!self.finished()) try self.advance();
+            if (self.pos.raw + 1 + 2 >= self.data.len)
                 return error.UnexpectedEOF;
-                //try self.logger.err("unexpected end of file.", .{}, .{ self.pos, self.pos }, null);
-                //return 0xFFFD;
-            }
 
             const hex_start = self.pos;
             const chars: [2]u8 = .{
@@ -550,8 +558,6 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
             };
         },
         'u' => {
-            const esc_seq_start = self.pos;
-            try self.advance(); // Advance past '\'.
             try self.advance(); // Advance past 'u'.
 
             var fail_pos = Pos{};
@@ -562,14 +568,15 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                 const esc_char_start = self.pos;
                 var idx: usize = 5;
 
-                while (!self.finished()) : (try self.advance()) {
+                while (true) : (try self.advance()) {
                     if (self.buf[0].code == '}') break;
 
                     if (!isHexadecimalChar(self.buf[0].code)) {
                         fail_pos = self.pos;
                         break :parse;
                     } else if (self.isSeparator(self.buf[1].?.code)) {
-                        fail_pos = self.pos.next();
+                        try self.advance();
+                        fail_pos = self.pos;
                         break :parse;
                     }
 
@@ -580,12 +587,6 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                     } else idx -|= 1;
                 }
 
-                if (self.finished()) {
-                    return error.UnexpectedEOF;
-                    //try self.logger.err("unexpected end of file.", .{}, .{ self.pos, self.pos }, null);
-                    //return 0xFFFD;
-                }
-
                 const char = parseUnsigned(u24, self.data[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
                 if (char > 0x10FFFF) {
                     try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos }, null);
@@ -593,16 +594,14 @@ inline fn parseEscapeSequence(self: *Self, comptime exit: u8) !u21 {
                 } else return @truncate(char);
             }
 
-            while (!self.finished() and isHexadecimalChar(self.buf[1].?.code)) try self.advance();
-            try self.advance();
             try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, fail_pos }, fail_pos);
             return 0xFFFD;
         },
-        else => {
-            try self.logger.err("invalid escape sequence.", .{}, .{ self.pos, self.pos }, null);
-            return 0xFFFD;
-        },
-    };
+        else => {},
+    }
+
+    try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, self.pos }, self.pos);
+    return 0xFFFD;
 }
 
 // Lex characters into the next token(s).
@@ -611,55 +610,58 @@ pub fn next(self: *Self) !void {
 
     const initial_len = self.output.items.len;
 
-    while (!self.finished() and initial_len == self.output.items.len) : (try self.advance()) {
+    while (initial_len == self.output.items.len) : (try self.advance()) {
         if (self.word.len == 0) self.start = self.pos;
-        if (self.pos.raw + 1 == self.data.len) {
-            switch (self.buf[0].code) {
-                ';', // end of statement
-                '}', // end of scope
-                => {},
-                else => return error.UnexpectedEOF,
-            }
-        }
 
-        var explicit_sign_number = (self.buf[0].code == '+' or self.buf[0].code == '-') and isNumberChar(self.buf[1].?.code);
-
-        // Explicitly +/- numbers; we must ensure the last token was not an expression.
-        if (explicit_sign_number) {
+        var signed_number = (self.buf[0].code == '+' or self.buf[0].code == '-') and isNumberChar(self.buf[1].?.code);
+        if (signed_number) {
             var last_token = self.getLastToken();
             if (last_token == null) return self.fatal("invalid syntax.", .{}, .{ self.pos, self.pos }, null);
-            explicit_sign_number = explicit_sign_number and !last_token.?.token.isExpression();
+            // if the last token was an expression, it's arithmetic. otherwise, it's a signed number.
+            signed_number = !last_token.?.token.isExpression();
         }
 
-        if (self.word.len == 0 and (isNumberChar(self.buf[0].code) or explicit_sign_number))
-            return self.tokenizeNumber(explicit_sign_number);
+        if (self.word.len == 0 and (isNumberChar(self.buf[0].code) or signed_number))
+            return self.tokenizeNumber(signed_number);
 
-        switch (self.buf[0].code) {
-            '"' => { // String parser.
+        char: switch (self.buf[0].code) {
+            inline '"', '`' => |e| { // String parser.
                 self.basic = false;
                 defer self.basic = true;
 
                 const start = self.pos;
-                try self.advance();
+                if (!self.fmt_string) try self.advance();
                 const inner_start = self.pos.raw;
                 var last = self.pos.raw;
+
+                const exit: u8 = @truncate(e);
+                const formatted = exit == '`';
+                if (formatted) self.fmt_string = true;
 
                 var buffer = std.ArrayList(u8).init(self.allocator);
                 var out = Token.String{};
 
                 while (!self.finished()) : (try self.advance()) {
-                    if (self.buf[0].code == '"') {
+                    const end = self.buf[0].code == exit;
+
+                    if (end or (formatted and self.buf[0].code == '{')) {
                         if (last == inner_start) {
-                            out.text = self.data[last..self.pos.raw];
-                            out.managed = false;
+                            out.data.text = self.data[last..self.pos.raw];
+                            out.data.managed = false;
                         } else {
                             try buffer.appendSlice(self.data[last..self.pos.raw]);
-                            out.text = try buffer.toOwnedSlice();
+                            out.data.text = try buffer.toOwnedSlice();
                         }
+
+                        if (formatted) {
+                            out.formatting = .{ .end = end };
+                            if (end) self.fmt_string = false;
+                        }
+
                         break;
                     } else if (self.buf[0].code == '\\') {
                         try buffer.appendSlice(self.data[last..self.pos.raw]);
-                        const c = try self.parseEscapeSequence('"');
+                        const c = try self.parseEscapeSequence(exit);
                         try unicode.writeCodepointToUtf8(c, buffer.writer());
                         last = self.buf[1].?.offset;
                     }
@@ -699,7 +701,7 @@ pub fn next(self: *Self) !void {
                     .token = .{ .char = char orelse 0xFFFD },
                 });
             },
-            // Division or comment.
+            // Symbol or comment.
             '/' => if (self.buf[1].?.code == '/' or self.buf[1].?.code == '*') {
                 var span = Span{ self.pos, self.pos };
                 var start = self.pos;
@@ -743,6 +745,11 @@ pub fn next(self: *Self) !void {
                     .span = span,
                     .token = .{ .doc_comment = out },
                 });
+            } else try self.addWord(true), // Symbol.
+            // Symbol or end of format string expression.
+            '}' => if (self.fmt_string) {
+                try self.advance();
+                continue :char '`';
             } else try self.addWord(true), // Symbol.
             else => if (!isSymbol(self.buf[0].code, true)) {
                 self.word.len +%= self.buf[0].len;
