@@ -5,7 +5,8 @@ const parseUnsigned = std.fmt.parseUnsigned;
 const parseInt = std.fmt.parseInt;
 const parseFloat = std.fmt.parseFloat;
 
-const grapheme = @import("grapheme");
+const code_point = @import("code_point");
+const CodePoint = code_point.CodePoint;
 
 const Script = @import("../Script.zig");
 const Logger = @import("../log.zig").Logger;
@@ -180,9 +181,6 @@ pub const LocatedToken = struct { span: Span, token: Token };
 
 pub const State = enum { string, char, number, none };
 
-// Grapheme data + the first codepoint
-const Char = struct { code: u21, len: u8, offset: u32 };
-
 inline fn isSymbol(char: u21, comptime dot: bool) bool {
     return switch (char) {
         '&', // logical/bitwise and
@@ -228,8 +226,8 @@ pos: Pos = .{},
 last: Pos = .{},
 start: Pos = .{},
 
-iter: grapheme.Iterator,
-buf: struct { Char, ?Char } = .{ undefined, null },
+iter: code_point.Iterator,
+buf: struct { CodePoint, ?CodePoint } = .{ undefined, null },
 word: []const u8 = "",
 basic: bool = true,
 fmt_string: bool = false,
@@ -243,15 +241,12 @@ const Self = @This();
 pub fn init(script: *Script) !Self {
     const allocator = script.arena.allocator();
 
-    const gd = try grapheme.GraphemeData.init(allocator);
-    const iter = grapheme.Iterator.init(script.data.buf, &gd);
-
     var lexer = Self{
         .allocator = allocator,
         .output = std.ArrayList(LocatedToken).init(allocator),
         .script = script,
         .data = script.data.buf,
-        .iter = iter,
+        .iter = .{ .bytes = script.data.buf },
         .logger = Logger(.lexer).init(allocator, script),
     };
 
@@ -268,8 +263,8 @@ pub fn deinit(self: *Self) void {
 }
 
 inline fn initialRead(self: *Self) !void {
-    if (try self.readgc(self.iter.next())) |char| self.buf[0] = char;
-    self.buf[1] = try self.readgc(self.iter.next());
+    if (self.iter.next()) |char| self.buf[0] = char;
+    self.buf[1] = self.iter.next();
 }
 
 // Resets the lexer, making it available to parse again.
@@ -280,8 +275,7 @@ pub fn reset(self: *Self, free: bool) void {
     self.last = .{};
     self.start = .{};
 
-    const gd = self.iter.data;
-    self.iter = grapheme.Iterator.init(self.data, gd);
+    self.iter = .{ .bytes = self.data };
     try self.initialRead();
 
     self.word = "";
@@ -316,14 +310,6 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
     });
 }
 
-inline fn readgc(self: Self, gc: ?grapheme.Grapheme) !?Char {
-    return if (gc) |g| blk: {
-        const buf = g.bytes(self.data);
-        const code = (try unicode.codepointFromUtf8(buf))[0];
-        break :blk .{ .code = code, .len = g.len, .offset = g.offset };
-    } else null;
-}
-
 // Returns true if we've hit EOF.
 inline fn advanceRead(self: *Self) !bool {
     self.buf[0] = self.buf[1] orelse {
@@ -333,7 +319,7 @@ inline fn advanceRead(self: *Self) !bool {
         return true;
     };
 
-    self.buf[1] = try self.readgc(self.iter.next());
+    self.buf[1] = self.iter.next();
     return false;
 }
 
@@ -358,7 +344,7 @@ fn advance(self: *Self) !void {
     self.last = self.pos;
     self.pos.col += 1;
 
-    self.buf[1] = try self.readgc(self.iter.next());
+    self.buf[1] = self.iter.next();
 
     if (isSepInternal(self.buf[0].code, true)) {
         if (self.basic) try self.addWord(false);
@@ -429,7 +415,7 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     var state = NumberType.u64;
     var exponent_reached = false;
     var exp_sign_reached = false;
-    var type_char: ?Char = null;
+    var type_char: ?CodePoint = null;
 
     if (signed) {
         state = NumberType.i64;

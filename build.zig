@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) anyerror!void {
     // DEPENDENCIES
 
     const zg = b.dependency("zg", .{});
-    const grapheme_mod = zg.module("grapheme");
+    const code_point_mod = zg.module("code_point");
 
     const static_map = b.dependency("static-map", .{});
     const static_map_mod = static_map.module("static-map");
@@ -20,8 +20,7 @@ pub fn build(b: *std.Build) anyerror!void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "grapheme", .module = grapheme_mod },
-
+            .{ .name = "code_point", .module = code_point_mod },
             .{ .name = "static-map", .module = static_map_mod },
         },
     });

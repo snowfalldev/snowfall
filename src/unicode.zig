@@ -56,10 +56,12 @@ pub fn writeCodepointToUtf8(codepoint: u21, writer: anytype) !void {
     }
 }
 
-// CHARACTER CATEGORIZATION
+pub inline fn debugChar(char: u21) !void {
+    var stderr = std.io.getStdErr();
+    try writeCodepointToUtf8(char, stderr.writer());
+}
 
-// Grapheme data + the first codepoint
-const Char = struct { code: u21, len: u8, offset: u32 };
+// CHARACTER CATEGORIZATION
 
 // Does this character function as some gap in text?
 pub fn isSeparator(code: u21) bool {

@@ -7,11 +7,10 @@ const Engine = helium.Engine;
 pub fn main() !void {
     const data = @embedFile("testfile.he");
 
-    const allocator = std.heap.smp_allocator;
-
-    //var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    //defer arena.deinit();
-    //const allocator = arena.allocator();
+    const allocator = if (builtin.mode == .Debug) blk: {
+        var dbg_alloc = std.heap.DebugAllocator(.{}).init;
+        break :blk dbg_alloc.allocator();
+    } else std.heap.smp_allocator;
 
     var engine = Engine.init(allocator);
     var module = try engine.registerScript("main", data);
