@@ -20,6 +20,7 @@ const BuiltinType = @import("../vm/type.zig").BuiltinType;
 const util = @import("../util.zig");
 
 const unicode = @import("../unicode.zig");
+const isGap = unicode.isGap;
 const isNewLine = unicode.isNewLine;
 const isNumberChar = unicode.isNumber;
 const isHexadecimalChar = unicode.isHexadecimal;
@@ -94,7 +95,7 @@ pub const Token = union(enum) {
         @"break",    // loop break
         @"continue", // loop continue
 
-        @"async", // execute call as async
+        @"async", // define function as async
         @"await", // await async function
 
         import, // import a script
@@ -108,19 +109,6 @@ pub const Token = union(enum) {
         text: []const u8 = "",
         top_level: bool = false,
     };
-
-    // Convert from a word representing a token (if possible).
-    pub fn fromWord(string: []const u8) ?Token {
-        if (std.mem.eql(u8, string, "null")) return .null;
-        if (std.mem.eql(u8, string, "undefined")) return .undefined;
-        if (std.mem.eql(u8, string, "true")) return .{ .bool = true };
-        if (std.mem.eql(u8, string, "false")) return .{ .bool = false };
-        if (string.len > 0 and !isNumberChar(string[0])) {
-            if (Keyword.string_map.get(string)) |kw| return .{ .keyword = kw };
-            if (BuiltinType.string_map.get(string)) |t| return .{ .builtin_type = t };
-            return .{ .identifier = string };
-        } else return null;
-    }
 
     // Write a token to a writer. Intended for debugging.
     pub fn writeDebug(self: Token, writer: anytype) !void {
@@ -166,22 +154,6 @@ pub const Token = union(enum) {
         var arraylist = std.ArrayList(u8).init(allocator);
         try self.writeDebug(arraylist.writer());
         return arraylist.toOwnedSlice();
-    }
-
-    // Is the token the end of an expression or an expression itself?
-    pub fn isExpression(self: Token) bool {
-        return switch (self) {
-            .symbol => |symbol| switch (symbol) {
-                ')' => true, // End of function call or expression in parenthesis.
-                else => false,
-            },
-
-            .keyword,
-            .doc_comment,
-            => false,
-
-            else => true,
-        };
     }
 };
 
@@ -296,10 +268,21 @@ inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Spa
 // Adds the current word to the output.
 fn addWord(self: *Self, comptime symbol: bool) !void {
     if (self.word.len != 0) {
-        self.word.ptr = @ptrCast(&self.script.src[self.start.raw]);
+        self.word.ptr = self.script.src.ptr + self.start.raw;
 
-        if (Token.fromWord(self.word)) |token|
-            try self.output.append(.{ .span = .{ self.start, self.last }, .token = token });
+        const tok: ?Token = blk: {
+            if (std.mem.eql(u8, self.word, "null")) break :blk .null;
+            if (std.mem.eql(u8, self.word, "undefined")) break :blk .undefined;
+            if (std.mem.eql(u8, self.word, "true")) break :blk .{ .bool = true };
+            if (std.mem.eql(u8, self.word, "false")) break :blk .{ .bool = false };
+            if (self.word.len > 0 and !isNumberChar(self.word[0])) {
+                if (Token.Keyword.string_map.get(self.word)) |kw| break :blk .{ .keyword = kw };
+                if (BuiltinType.string_map.get(self.word)) |t| break :blk .{ .builtin_type = t };
+                break :blk .{ .identifier = self.word };
+            } else break :blk null;
+        };
+
+        if (tok) |token| try self.output.append(.{ .span = .{ self.start, self.last }, .token = token });
 
         self.word.len = 0;
     }
@@ -346,10 +329,10 @@ fn advance(self: *Self) !void {
 
     self.buf[1] = self.iter.next();
 
-    if (isSepInternal(self.buf[0].code, true)) {
+    if (isGap(self.buf[0].code)) {
         if (self.basic) try self.addWord(false);
 
-        while (isSepInternal(self.buf[0].code, true)) {
+        while (isGap(self.buf[0].code)) {
             const code1 = self.buf[0].code;
             if (isNewLine(code1)) {
                 self.pos.row += 1;
@@ -371,14 +354,6 @@ fn advance(self: *Self) !void {
 
     self.pos.raw = self.buf[0].offset;
     if (self.word.len == 0) self.start = self.pos;
-}
-
-inline fn isSepInternal(code: u21, include_space: bool) bool {
-    return unicode.isNewLine(code) or (include_space and unicode.isEffectiveSpace(code));
-}
-
-inline fn isSeparator(self: *Self, code: u21) bool {
-    return isSepInternal(code, self.basic);
 }
 
 // Validates and tokenizes a possible number.
@@ -416,7 +391,6 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     }
 
     while (!self.finished()) : (try self.advance()) {
-        span[1] = self.pos;
         num: switch (self.buf[0].code) {
             '0'...'9', '_' => {},
             'f' => continue :num if (out.base == 10) 'i' else 'F',
@@ -449,32 +423,35 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
             else => return self.fatal("unexpected character in number", .{}, span, self.pos),
         }
 
+        span[1] = self.pos;
+
         if (exponent_reached and (self.buf[1].?.code == '+' or self.buf[1].?.code == '-')) continue;
 
-        if (isSymbol(self.buf[1].?.code, false) or self.isSeparator(self.buf[1].?.code)) {
+        if (isSymbol(self.buf[1].?.code, false) or isGap(self.buf[1].?.code)) {
             try self.advance();
             break;
         }
     }
 
-    out.buf = self.script.src[after_base..self.pos.raw];
-    var type_span = Span{ self.pos, self.pos };
-    var err = false;
+    out.buf = self.script.src[after_base .. span[1].raw + 1];
 
     if (type_char) |char| get_type: {
+        const start = self.pos;
+
         while (!self.finished()) : (try self.advance()) {
-            if (unicode.isEffectiveSpace(self.buf[0].code)) break;
-            if (isSymbol(self.buf[0].code, true)) break;
-            type_span[1] = self.pos;
+            if (isSymbol(self.buf[1].?.code, true) or isGap(self.buf[1].?.code)) {
+                span[1] = self.pos;
+                try self.advance();
+                break;
+            }
         }
 
-        const type_string = self.script.src[type_span[0].raw..self.pos.raw];
+        const type_string = self.script.src[start.raw .. span[1].raw + 1];
 
         if (type_string.len > 1) {
             out.typ = NumberType.string_map.get(type_string);
             if (out.typ == null) {
-                try self.logger.err("unknown type", .{}, type_span, null);
-                err = true;
+                try self.logger.err("unknown type", .{}, .{ start, span[1] }, null);
                 break :get_type;
             }
         } else out.typ = switch (char.code) {
@@ -485,18 +462,13 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
             else => unreachable,
         };
 
-        span[1] = type_span[1];
-
         if ((char.code == 'i' or char.code == 'n') and state == .f64) {
-            try self.logger.err("floating-point numbers cannot become signed integers", .{}, span, type_span[0]);
-            err = true;
+            try self.logger.err("floating-point numbers cannot become signed integers", .{}, span, start);
         } else if (char.code == 'u') {
             if (state == .i64 and out.buf[0] == '-') {
-                try self.logger.err("unsigned integers cannot be negative", .{}, span, type_span[0]);
-                err = true;
+                try self.logger.err("unsigned integers cannot be negative", .{}, span, start);
             } else if (state == .f64) {
-                try self.logger.err("floating-point numbers cannot become unsigned integers", .{}, span, type_span[0]);
-                err = true;
+                try self.logger.err("floating-point numbers cannot become unsigned integers", .{}, span, start);
             }
         }
     }
@@ -550,12 +522,12 @@ fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
                 while (true) : (try self.advance()) {
                     if (self.buf[0].code == '}') break;
 
-                    if (!isHexadecimalChar(self.buf[0].code)) {
+                    if (!(isHexadecimalChar(self.buf[0].code) or self.buf[0].code == '_')) {
                         fail_pos = self.pos;
                         break :parse;
-                    } else if (self.isSeparator(self.buf[1].?.code)) {
+                    } else if (isNewLine(self.buf[1].?.code)) {
+                        fail_pos = self.pos.next();
                         try self.advance();
-                        fail_pos = self.pos;
                         break :parse;
                     }
 
@@ -594,7 +566,14 @@ pub fn next(self: *Self) !void {
         if (self.word.len == 0) {
             var signed_number = (self.buf[0].code == '-' or self.buf[0].code == '+') and isNumberChar(self.buf[1].?.code);
             // if the last token was an expression, it's arithmetic. otherwise, it's a signed number.
-            if (signed_number) signed_number = last_token != null and !last_token.?.token.isExpression();
+            if (signed_number and last_token != null) {
+                signed_number = switch (last_token.?.token) {
+                    // end of function call or expression in parenthesis
+                    .symbol => |symbol| symbol == ')',
+                    .keyword, .doc_comment => false,
+                    else => true,
+                };
+            }
 
             if (isNumberChar(self.buf[0].code) or signed_number)
                 return self.tokenizeNumber(signed_number);
@@ -667,7 +646,7 @@ pub fn next(self: *Self) !void {
                 }
 
                 if (self.buf[0].code != '\'') {
-                    while (!self.finished() and self.buf[0].code != '\'' and !self.isSeparator(self.buf[1].?.code)) try self.advance();
+                    while (!self.finished() and self.buf[0].code != '\'' and !isNewLine(self.buf[1].?.code)) try self.advance();
 
                     if (self.buf[0].code == '\'') {
                         try self.fatal("character is too large", .{}, .{ start, self.pos }, null);

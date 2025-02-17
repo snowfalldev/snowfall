@@ -64,13 +64,13 @@ pub inline fn debugChar(char: u21) !void {
 // CHARACTER CATEGORIZATION
 
 // Does this character function as some gap in text?
-pub fn isSeparator(code: u21) bool {
-    return isEffectiveSpace(code) or isNewLine(code);
+pub fn isGap(code: u21) bool {
+    return isSpace(code) or isNewLine(code);
 }
 
 // Is this character an "effective" space?
 // Unicode Zs + Zp categories with tab added.
-pub fn isEffectiveSpace(code: u21) bool {
+pub fn isSpace(code: u21) bool {
     return switch (code) {
         ' ',
         '\t',
