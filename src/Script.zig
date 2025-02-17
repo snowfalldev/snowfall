@@ -8,90 +8,48 @@ const Allocator = std.mem.Allocator;
 const Arena = std.heap.ArenaAllocator;
 
 const ast = @import("ast.zig");
-pub const Lexer = ast.Lexer;
+const Lexer = ast.Lexer;
+const Parser = ast.Parser;
 
 const Self = @This();
 
-const DataStorage = struct {
-    buf: []const u8,
-    managed: bool,
-
-    pub inline fn fromUtf8(utf8: []const u8, allocator: Allocator) !DataStorage {
-        if (unicode.utf8ValidateSlice(utf8))
-            return .{ .buf = utf8, .managed = false };
-        if (builtin.os.tag == .windows and unicode.wtf8ValidateSlice(utf8))
-            return .{ .buf = try unicode.wtf8ToUtf8LossyAlloc(allocator, utf8), .managed = true };
-        return error.InvalidUtf8;
-    }
-
-    pub inline fn deinit(self: DataStorage, allocator: Allocator) void {
-        if (self.managed) allocator.free(self.buf);
-    }
-};
-
-arena: *Arena,
 engine: *Engine,
 
-data: DataStorage,
-name: DataStorage,
-path: ?[]const u8,
-
-deps: std.ArrayList(*Self),
+name: []const u8,
+src: []const u8,
 
 lexer: Lexer,
+parser: Parser,
 
-inline fn initInner(engine: *Engine, name: []const u8, src: []const u8, arena: *Arena) !*Self {
-    const allocator = arena.allocator();
-    var mod = try allocator.create(Self);
-    mod.* = .{
-        .arena = arena,
-        .engine = engine,
-
-        .data = try DataStorage.fromUtf8(src, allocator),
-        .name = try DataStorage.fromUtf8(name, allocator),
-        .path = null,
-
-        .deps = std.ArrayList(*Self).init(allocator),
-        .lexer = undefined,
-    };
-
-    mod.lexer = try Lexer.init(mod);
-
-    return mod;
-}
+// INIT / DEINIT
 
 pub fn init(engine: *Engine, name: []const u8, src: []const u8) !*Self {
-    const arena = try engine.allocator.create(Arena);
-    arena.* = Arena.init(engine.allocator);
-    return Self.initInner(engine, name, src, arena);
-}
+    var script = try engine.allocator.create(Self);
 
-pub fn initFile(engine: *Engine, path: []const u8) !*Self {
-    const arena = try engine.allocator.create(Arena);
-    arena.* = Arena.init(engine.allocator);
-    const allocator = arena.allocator();
+    script.* = .{
+        .engine = engine,
 
-    var file: std.fs.File = undefined;
-    if (!std.fs.path.isAbsolute(path)) {
-        const cwd = std.fs.cwd();
-        file = cwd.openFile(path, .{});
-    } else file = std.fs.openFileAbsolute(path, .{});
+        .name = name,
+        .src = src,
 
-    const data = file.readToEndAlloc(allocator, std.math.maxInt(usize));
+        .lexer = undefined,
+        .parser = undefined,
+    };
 
-    const self = try Self.initInner(engine, path, data, arena);
-    self.data.managed = true;
-    return self;
+    script.lexer = try Lexer.init(script);
+
+    return script;
 }
 
 pub inline fn deinit(self: *Self) void {
-    const arena = self.arena;
-    const allocator = arena.child_allocator;
-    arena.deinit();
-    allocator.destroy(arena);
+    self.lexer.deinit();
+    self.parser.deinit();
+    self.engine.allocator.destroy(self);
 }
 
+// LEXING / PARSING
+
 pub inline fn finishLexer(self: *Self) !*std.ArrayList(ast.Lexer.LocatedToken) {
-    try self.lexer.finish();
+    while (!self.lexer.finished()) try self.lexer.next();
     return &self.lexer.output;
 }

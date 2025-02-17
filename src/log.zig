@@ -104,17 +104,18 @@ pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
             try if (builtin.mode != .Debug) out.append('[') else out.appendSlice(" | ");
 
             const writer = out.writer();
-            try writer.print("{s}", .{self.script.?.name.buf});
-            try if (span) |s| writer.print(" ({}:{})]", .{ s[0].row + 1, s[0].col + 1 }) else out.append(']');
+            try writer.print("{s}", .{self.script.?.name});
+            try if (span) |s| writer.print(" - {}:{}]", .{ s[0].row + 1, s[0].col + 1 }) else out.append(']');
             return out.toOwnedSlice();
         }
 
         fn dataString(self: Self, span: ?Span, hi: ?Pos) ![]const u8 {
             if (self.script == null or span == null) return self.allocator.alloc(u8, 0);
             const s = span.?;
-            const d = self.script.?.data.buf;
+            const d = self.script.?.src;
 
-            const line_start_pos = s[0].raw - s[0].col;
+            var line_start_pos = s[0].raw - s[0].col;
+            while (line_start_pos > 0 and !unicode.isNewLine(d[line_start_pos - 1])) line_start_pos -= 1;
             var line_end_pos: usize = line_start_pos;
             while (line_end_pos < d.len and !unicode.isNewLine(d[line_end_pos])) line_end_pos += 1;
 

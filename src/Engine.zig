@@ -7,6 +7,8 @@ scripts: std.StringHashMap(*Script),
 
 const Self = @This();
 
+// INIT / DEINIT
+
 pub inline fn init(allocator: std.mem.Allocator) Self {
     return .{
         .allocator = allocator,
@@ -14,20 +16,24 @@ pub inline fn init(allocator: std.mem.Allocator) Self {
     };
 }
 
-pub inline fn registerScript(self: *Self, name: []const u8, src: []const u8) !*Script {
-    const mod = try Script.init(self, name, src);
-    try self.scripts.put(name, mod);
-    return mod;
+pub fn deinit(self: *Self) void {
+    var scripts = self.scripts.iterator();
+    while (scripts.next()) |script|
+        script.value_ptr.*.deinit();
+
+    self.scripts.deinit();
 }
+
+// REGISTER SCRIPTS
+
+pub inline fn registerScript(self: *Self, name: []const u8, src: []const u8) !*Script {
+    const script = try Script.init(self, name, src);
+    try self.scripts.put(name, script);
+    return script;
+}
+
+// GET SCRIPTS
 
 pub inline fn getScript(self: *Self, name: []const u8) ?*Script {
     return self.scripts.get(name);
-}
-
-pub fn deinit(self: *Self) void {
-    var scripts = self.scripts.iterator();
-    while (scripts.next()) |mod|
-        mod.value_ptr.*.deinit();
-
-    self.scripts.deinit();
 }

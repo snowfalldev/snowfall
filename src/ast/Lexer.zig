@@ -1,5 +1,9 @@
+// A terrible lexer that does half the work a parser should do.
+// Hopefully that'll mean the parser's easy to do.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Arena = std.heap.ArenaAllocator;
 const allocPrint = std.fmt.allocPrint;
 const parseUnsigned = std.fmt.parseUnsigned;
 const parseInt = std.fmt.parseInt;
@@ -10,8 +14,8 @@ const CodePoint = code_point.CodePoint;
 
 const Script = @import("../Script.zig");
 const Logger = @import("../log.zig").Logger;
-const NumberType = @import("../interp/value/number.zig").NumberType;
-const BuiltinType = @import("../interp/type.zig").BuiltinType;
+const NumberType = @import("../vm/value/number.zig").NumberType;
+const BuiltinType = @import("../vm/type.zig").BuiltinType;
 
 const util = @import("../util.zig");
 
@@ -60,11 +64,10 @@ pub const Token = union(enum) {
 
         @"and", @"or", // boolean operations
 
-        throw,    // raise error
-        @"try",   // try function which raises errors
+        throw,    // throw error
+        @"try",   // try function which throws errors
         @"catch", // catch error
-        assert,   // raise error if condition not true
-                  // in a function which doesn't throw errors, this will crash the program!
+        assert,   // throw error if condition not true
 
         @"if",     // define conditional if statement
         @"else",   // define conditional else statement
@@ -74,10 +77,11 @@ pub const Token = union(enum) {
         @"const", // declare constant variable
         @"var",   // declare mutable variable
 
-        func,      // define function
-        @"return", // return from function
-        @"defer",  // execute statement when function returns
-        ref,       // get reference to param instead of copying
+        func,        // define function
+        @"return",   // return from function
+        @"defer",    // execute when function returns
+        @"errdefer", // execute when function throws error
+        ref,         // get mutable reference to param
 
         @"struct", // define struct
         @"enum",   // define enum
@@ -90,7 +94,11 @@ pub const Token = union(enum) {
         @"break",    // loop break
         @"continue", // loop continue
 
+        @"async", // execute call as async
+        @"await", // await async function
+
         import, // import a script
+        from, // cherry-pick imports
 
         pub const string_map = util.mkStringMap(Keyword);
     };
@@ -216,12 +224,12 @@ inline fn isSymbol(char: u21, comptime dot: bool) bool {
 
 // the actual lexer
 
-allocator: Allocator,
+script: *Script,
 
+arena: Arena,
+allocator: Allocator,
 output: std.ArrayList(LocatedToken),
 
-script: *Script,
-data: []const u8,
 pos: Pos = .{},
 last: Pos = .{},
 start: Pos = .{},
@@ -237,55 +245,36 @@ failed: bool = false,
 
 const Self = @This();
 
-// Initializes a new lexer.
-pub fn init(script: *Script) !Self {
-    const allocator = script.arena.allocator();
+// INIT / DEINIT
 
+/// Initializes a new lexer.
+pub fn init(script: *Script) !Self {
     var lexer = Self{
-        .allocator = allocator,
-        .output = std.ArrayList(LocatedToken).init(allocator),
         .script = script,
-        .data = script.data.buf,
-        .iter = .{ .bytes = script.data.buf },
-        .logger = Logger(.lexer).init(allocator, script),
+        .arena = Arena.init(script.engine.allocator),
+        .allocator = undefined,
+        .output = undefined,
+        .iter = .{ .bytes = script.src },
+        .logger = undefined,
     };
 
-    try lexer.initialRead();
+    if (lexer.iter.next()) |char| lexer.buf[0] = char;
+    lexer.buf[1] = lexer.iter.next();
+
+    lexer.allocator = lexer.arena.allocator();
+    lexer.output = std.ArrayList(LocatedToken).init(lexer.allocator);
+    lexer.logger = Logger(.lexer).init(lexer.allocator, script);
+
     return lexer;
 }
 
-// De-initializes the lexer.
-// This should only be run after the output of the lexer is done being used.
-pub fn deinit(self: *Self) void {
-    self.output.deinit();
-    self.iter.data.deinit();
-    self.logger.deinit();
+/// De-initializes the lexer.
+/// This should only be run after the output of the lexer is done being used.
+pub inline fn deinit(self: Self) void {
+    self.arena.deinit();
 }
 
-inline fn initialRead(self: *Self) !void {
-    if (self.iter.next()) |char| self.buf[0] = char;
-    self.buf[1] = self.iter.next();
-}
-
-// Resets the lexer, making it available to parse again.
-pub fn reset(self: *Self, free: bool) void {
-    if (free) self.output.clearAndFree() else self.output.clearRetainingCapacity();
-
-    self.pos = .{};
-    self.last = .{};
-    self.start = .{};
-
-    self.iter = .{ .bytes = self.data };
-    try self.initialRead();
-
-    self.word = "";
-    self.basic = true;
-}
-
-// Lexes the entire queue.
-pub inline fn finish(self: *Self) !void {
-    while (!self.finished()) try self.next();
-}
+// MISCELLANEOUS UTILITIES
 
 // Returns the last token the lexer outputted.
 pub inline fn getLastToken(self: *Self) ?LocatedToken {
@@ -293,10 +282,21 @@ pub inline fn getLastToken(self: *Self) ?LocatedToken {
     return self.output.items[self.output.items.len - 1];
 }
 
+pub inline fn finished(self: Self) bool {
+    return (self.pos.raw >= self.script.src.len or self.failed);
+}
+
+inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
+    try self.logger.err(fmt, args, span, hi);
+    self.failed = true;
+}
+
+// IMPLEMENTATION
+
 // Adds the current word to the output.
 fn addWord(self: *Self, comptime symbol: bool) !void {
     if (self.word.len != 0) {
-        self.word.ptr = @ptrCast(&self.data[self.start.raw]);
+        self.word.ptr = @ptrCast(&self.script.src[self.start.raw]);
 
         if (Token.fromWord(self.word)) |token|
             try self.output.append(.{ .span = .{ self.start, self.last }, .token = token });
@@ -314,7 +314,7 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
 inline fn advanceRead(self: *Self) !bool {
     self.buf[0] = self.buf[1] orelse {
         // no next char, we're done
-        self.pos.raw = self.data.len;
+        self.pos.raw = self.script.src.len;
         self.pos.col += 1;
         return true;
     };
@@ -334,7 +334,7 @@ fn advance(self: *Self) !void {
         // no next char, we're done
         // make sure we know we are
         if (!self.finished()) {
-            self.pos.raw = self.data.len;
+            self.pos.raw = self.script.src.len;
             self.pos.col += 1;
         }
 
@@ -370,10 +370,7 @@ fn advance(self: *Self) !void {
     }
 
     self.pos.raw = self.buf[0].offset;
-}
-
-pub inline fn finished(self: Self) bool {
-    return (self.pos.raw >= self.data.len or self.failed);
+    if (self.word.len == 0) self.start = self.pos;
 }
 
 inline fn isSepInternal(code: u21, include_space: bool) bool {
@@ -384,11 +381,7 @@ inline fn isSeparator(self: *Self, code: u21) bool {
     return isSepInternal(code, self.basic);
 }
 
-inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
-    try self.logger.err(fmt, args, span, hi);
-    self.failed = true;
-}
-
+// Validates and tokenizes a possible number.
 inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     self.basic = false;
     defer self.basic = true;
@@ -432,15 +425,15 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
                 break;
             },
             'a'...'d', 'A'...'D', 'F' => if (out.base != 16)
-                return self.fatal("hex char in base {} number.", .{out.base}, span, self.pos),
+                return self.fatal("hex char in base {} number", .{out.base}, span, self.pos),
             'e', 'E' => switch (out.base) {
                 16 => {},
                 10 => if (state == .f64) {
                     if (!exponent_reached) {
                         exponent_reached = true;
-                    } else return self.fatal("hex char in float exponent.", .{}, span, self.pos);
-                } else return self.fatal("hex char in base 10 number.", .{}, span, self.pos),
-                else => return self.fatal("hex char in base {} number.", .{out.base}, span, self.pos),
+                    } else return self.fatal("hex char in float exponent", .{}, span, self.pos);
+                } else return self.fatal("hex char in base 10 number", .{}, span, self.pos),
+                else => return self.fatal("hex char in base {} number", .{out.base}, span, self.pos),
             },
             '+', '-' => if (exponent_reached) {
                 if (exp_sign_reached) break;
@@ -453,7 +446,7 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
                 if (!isNumberChar(self.buf[1].?.code)) break;
                 state = NumberType.f64;
             },
-            else => return self.fatal("unexpected character in number.", .{}, span, self.pos),
+            else => return self.fatal("unexpected character in number", .{}, span, self.pos),
         }
 
         if (exponent_reached and (self.buf[1].?.code == '+' or self.buf[1].?.code == '-')) continue;
@@ -464,23 +457,23 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
         }
     }
 
-    out.buf = self.data[after_base..self.pos.raw];
+    out.buf = self.script.src[after_base..self.pos.raw];
     var type_span = Span{ self.pos, self.pos };
     var err = false;
 
     if (type_char) |char| get_type: {
-        while (!self.finished()) {
-            if (isSymbol(self.buf[0].code, true) or self.isSeparator(self.buf[0].code)) break;
+        while (!self.finished()) : (try self.advance()) {
+            if (unicode.isEffectiveSpace(self.buf[0].code)) break;
+            if (isSymbol(self.buf[0].code, true)) break;
             type_span[1] = self.pos;
-            try self.advance();
         }
 
-        const type_string = self.data[type_span[0].raw..self.pos.raw];
+        const type_string = self.script.src[type_span[0].raw..self.pos.raw];
 
         if (type_string.len > 1) {
             out.typ = NumberType.string_map.get(type_string);
             if (out.typ == null) {
-                try self.logger.err("unknown type.", .{}, type_span, null);
+                try self.logger.err("unknown type", .{}, type_span, null);
                 err = true;
                 break :get_type;
             }
@@ -495,14 +488,14 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
         span[1] = type_span[1];
 
         if ((char.code == 'i' or char.code == 'n') and state == .f64) {
-            try self.logger.err("floating-point numbers cannot become signed integers.", .{}, span, type_span[0]);
+            try self.logger.err("floating-point numbers cannot become signed integers", .{}, span, type_span[0]);
             err = true;
         } else if (char.code == 'u') {
             if (state == .i64 and out.buf[0] == '-') {
-                try self.logger.err("unsigned integers cannot be negative.", .{}, span, type_span[0]);
+                try self.logger.err("unsigned integers cannot be negative", .{}, span, type_span[0]);
                 err = true;
             } else if (state == .f64) {
-                try self.logger.err("floating-point numbers cannot become unsigned integers.", .{}, span, type_span[0]);
+                try self.logger.err("floating-point numbers cannot become unsigned integers", .{}, span, type_span[0]);
                 err = true;
             }
         }
@@ -511,12 +504,12 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     try self.output.append(.{ .span = span, .token = .{ .number = out } });
 }
 
-inline fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
+fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
     const esc_seq_start = self.pos;
     try self.advance();
 
     switch (self.buf[0].code) {
-        'n', 'r', 't', '\\', exit => |esc| {
+        'n', 'r', 't', '\\' => |esc| {
             return switch (esc) {
                 'n' => '\n',
                 'r' => '\r',
@@ -528,7 +521,7 @@ inline fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
         'x' => {
             try self.advance(); // Advance past 'x'.
 
-            if (self.pos.raw + 1 + 2 >= self.data.len)
+            if (self.pos.raw + 1 + 2 >= self.script.src.len)
                 return error.UnexpectedEOF;
 
             const hex_start = self.pos;
@@ -539,14 +532,14 @@ inline fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
             try self.advance();
 
             return parseUnsigned(u8, &chars, 16) catch {
-                try self.logger.err("bad hexadecimal number.", .{}, .{ hex_start, self.pos }, null); // Overflow is unreachable.
+                try self.logger.err("bad hexadecimal number", .{}, .{ hex_start, self.pos }, null); // Overflow is unreachable.
                 return 0xFFFD;
             };
         },
         'u' => {
             try self.advance(); // Advance past 'u'.
 
-            var fail_pos = Pos{};
+            var fail_pos = self.pos;
 
             if (self.buf[0].code == '{') parse: {
                 try self.advance(); // Advance past '{'.
@@ -568,25 +561,25 @@ inline fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
 
                     if (idx == 0) {
                         while (!self.finished() and self.buf[0].code != '}') try self.advance();
-                        try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos }, null);
+                        try self.logger.err("escape sequence is too large", .{}, .{ esc_seq_start, self.pos }, null);
                         return 0xFFFD;
                     } else idx -|= 1;
                 }
 
-                const char = parseUnsigned(u24, self.data[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
+                const char = parseUnsigned(u24, self.script.src[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
                 if (char > 0x10FFFF) {
-                    try self.logger.err("escape sequence is too large.", .{}, .{ esc_seq_start, self.pos }, null);
+                    try self.logger.err("escape sequence is too large", .{}, .{ esc_seq_start, self.pos }, null);
                     return 0xFFFD;
                 } else return @truncate(char);
             }
 
-            try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, fail_pos }, fail_pos);
+            try self.logger.err("invalid escape sequence", .{}, .{ esc_seq_start, fail_pos }, fail_pos);
             return 0xFFFD;
         },
-        else => {},
+        else => |char| if (char == exit) return char,
     }
 
-    try self.logger.err("invalid escape sequence.", .{}, .{ esc_seq_start, self.pos }, self.pos);
+    try self.logger.err("invalid escape sequence", .{}, .{ esc_seq_start, self.pos }, self.pos);
     return 0xFFFD;
 }
 
@@ -595,23 +588,20 @@ pub fn next(self: *Self) !void {
     if (self.finished()) return;
 
     const initial_len = self.output.items.len;
+    const last_token = self.getLastToken();
 
     while (initial_len == self.output.items.len) : (try self.advance()) {
-        if (self.word.len == 0) self.start = self.pos;
-
-        var signed_number = (self.buf[0].code == '+' or self.buf[0].code == '-') and isNumberChar(self.buf[1].?.code);
-        if (signed_number) {
-            var last_token = self.getLastToken();
-            if (last_token == null) return self.fatal("invalid syntax.", .{}, .{ self.pos, self.pos }, null);
+        if (self.word.len == 0) {
+            var signed_number = (self.buf[0].code == '-' or self.buf[0].code == '+') and isNumberChar(self.buf[1].?.code);
             // if the last token was an expression, it's arithmetic. otherwise, it's a signed number.
-            signed_number = !last_token.?.token.isExpression();
+            if (signed_number) signed_number = last_token != null and !last_token.?.token.isExpression();
+
+            if (isNumberChar(self.buf[0].code) or signed_number)
+                return self.tokenizeNumber(signed_number);
         }
 
-        if (self.word.len == 0 and (isNumberChar(self.buf[0].code) or signed_number))
-            return self.tokenizeNumber(signed_number);
-
         char: switch (self.buf[0].code) {
-            inline '"', '`' => |e| { // String parser.
+            '"', '`' => |e| { // String parser.
                 self.basic = false;
                 defer self.basic = true;
 
@@ -632,10 +622,10 @@ pub fn next(self: *Self) !void {
 
                     if (end or (formatted and self.buf[0].code == '{')) {
                         if (last == inner_start) {
-                            out.data.text = self.data[last..self.pos.raw];
+                            out.data.text = self.script.src[last..self.pos.raw];
                             out.data.managed = false;
                         } else {
-                            try buffer.appendSlice(self.data[last..self.pos.raw]);
+                            try buffer.appendSlice(self.script.src[last..self.pos.raw]);
                             out.data.text = try buffer.toOwnedSlice();
                         }
 
@@ -646,7 +636,7 @@ pub fn next(self: *Self) !void {
 
                         break;
                     } else if (self.buf[0].code == '\\') {
-                        try buffer.appendSlice(self.data[last..self.pos.raw]);
+                        try buffer.appendSlice(self.script.src[last..self.pos.raw]);
                         const c = try self.parseEscapeSequence(exit);
                         try unicode.writeCodepointToUtf8(c, buffer.writer());
                         last = self.buf[1].?.offset;
@@ -667,7 +657,7 @@ pub fn next(self: *Self) !void {
 
                 try self.advance();
                 if (self.buf[0].code == '\'') {
-                    try self.logger.err("empty characters not allowed.", .{}, .{ start, self.pos }, null);
+                    try self.logger.err("empty characters not allowed", .{}, .{ start, self.pos }, null);
                 } else if (self.buf[0].code == '\\') {
                     char = try self.parseEscapeSequence('\'');
                     try self.advance();
@@ -677,9 +667,15 @@ pub fn next(self: *Self) !void {
                 }
 
                 if (self.buf[0].code != '\'') {
-                    while (!self.finished() and self.buf[0].code != '\'') try self.advance();
-                    try self.logger.err("character is too large.", .{}, .{ start, self.pos }, null);
-                    try self.logger.info("strings are defined with double quotes.", .{}, null, null);
+                    while (!self.finished() and self.buf[0].code != '\'' and !self.isSeparator(self.buf[1].?.code)) try self.advance();
+
+                    if (self.buf[0].code == '\'') {
+                        try self.fatal("character is too large", .{}, .{ start, self.pos }, null);
+                    } else {
+                        try self.fatal("character has no end", .{}, .{ start, start }, null);
+                    }
+
+                    try self.logger.info("strings are defined with double quotes", .{}, null, null);
                 }
 
                 try self.output.append(.{
@@ -723,9 +719,9 @@ pub fn next(self: *Self) !void {
                 }
 
                 if (out.top_level and span[0].raw != 0)
-                    return self.fatal("top-level doc comment must be at the start of the file.", .{}, span, null);
+                    return self.fatal("top-level doc comment must be at the start of the file", .{}, span, null);
 
-                out.text = self.data[start.raw .. span[1].raw + 1];
+                out.text = self.script.src[start.raw .. span[1].raw + 1];
 
                 if (doc or out.top_level) try self.output.append(.{
                     .span = span,
@@ -741,5 +737,7 @@ pub fn next(self: *Self) !void {
                 self.word.len +%= self.buf[0].len;
             } else try self.addWord(true), // Symbol.
         }
+
+        if (self.failed) return;
     }
 }

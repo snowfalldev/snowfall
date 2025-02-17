@@ -3,18 +3,18 @@ const util = @import("../util.zig");
 
 pub const TypeDesc = union(enum) {
     builtin: BuiltinType,
-    external: u63,
+    external: u31,
 
-    pub inline fn toU64(self: TypeDesc) u64 {
+    pub inline fn toU32(self: TypeDesc) u32 {
         return switch (self) {
-            .builtin => |v| @intCast(@intFromEnum(v)),
-            .external => |v| @as(u64, 1 << 63) | @as(u64, @intCast(v)),
+            .builtin => |v| @as(u32, @intFromEnum(v)) << 1,
+            .external => |v| @as(u32, 1) | (@as(u32, v) << 1),
         };
     }
 
     pub inline fn fromU64(int: u64) TypeDesc {
-        if ((int >> 63) == 0) return .{ .builtin = @truncate(int) };
-        return .{ .external = @truncate(int) };
+        if ((int & 1) == 1) return .{ .external = @truncate(int >> 1) };
+        return .{ .builtin = @enumFromInt(@as(u8, @truncate(int >> 1))) };
     }
 };
 
@@ -94,8 +94,7 @@ pub const BuiltinType = enum(u8) {
     type   = 0x70,
     func   = 0x80,
     
-    maybe = 0xFE, 
-    any   = 0xFF,
+    any = 0xFF,
 
     pub const string_map = util.mkStringMap(BuiltinType);
 };

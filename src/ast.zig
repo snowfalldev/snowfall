@@ -1,10 +1,12 @@
-pub const Lexer = @import("ast/Lexer.zig");
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
+pub const Lexer = @import("ast/Lexer.zig");
 const Token = Lexer.Token;
 
-const Number = @import("interp/value/number.zig").Number;
+pub const Parser = @import("ast/Parser.zig");
+
+const Number = @import("vm/value/number.zig").Number;
 
 // SOURCE FILE POSITIONS
 
