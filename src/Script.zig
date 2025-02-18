@@ -18,7 +18,7 @@ engine: *Engine,
 name: []const u8,
 src: []const u8,
 
-lexer: Lexer,
+lexer: *Lexer,
 parser: Parser,
 
 // INIT / DEINIT
@@ -49,7 +49,7 @@ pub inline fn deinit(self: *Self) void {
 
 // LEXING / PARSING
 
-pub inline fn finishLexer(self: *Self) !*std.ArrayList(ast.Lexer.LocatedToken) {
+pub inline fn finishLexer(self: *Self) ![]ast.Lexer.LocatedToken {
     while (!self.lexer.finished()) try self.lexer.next();
-    return &self.lexer.output;
+    return self.lexer.output.items;
 }

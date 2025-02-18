@@ -1,4 +1,8 @@
+// currently outputs almost every possible error in the lexer, intended for testing
+
 pub const test = "haiii 👋";
+
+//! garbage-level doc comment
 
 // this is a regular comment, doesn't get tokenized
 /// this is a doc comment, gets tokenized and attached to the function below
@@ -21,14 +25,21 @@ im multiline too!!
 pub func main() void {
   testFunc(test, -1);
   const um = '\n';
-  const um2 = 'n';
+  const um2 = 'na';
+  const um3 = '\xFP';
   std.println("Hello, world!");
-  std.print('\u{1F480}');
+  std.print('\u{1F480 }');
+  std.print('\u{FFFFFFFFF}');
   std.print(" <- skull\n\u{1F480}\u{1F480}💀 <- oh it's here thrice\n");
   std.println(`1 + 2 = {1 + 2}`);
   std.println("0.1 * 5.5 = ", 0.55);
   std.println(`3 + 1 = {4u32}`);
-  std.println("0.2 * 3.3 = ", 6.6e-1f16);
+  std.println("0.2 * 3.3 = ", 6.6e-1f17);
   std.println(`squiggly brackets: \{}`);
   @panic("welp");
+  const test1 = 1.0i64;
+  const test2 = 1.0u;
+  const test3 = +1u; // explicitly signed
+  const epic_fail = '';
+  const epic_fail_2 = '
 }

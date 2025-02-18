@@ -29,7 +29,6 @@ const ast = @import("../ast.zig");
 const Pos = ast.Pos;
 const Span = ast.Span;
 
-// A lexer token.
 pub const Token = union(enum) {
     // values
     null,
@@ -159,9 +158,7 @@ pub const Token = union(enum) {
 
 pub const LocatedToken = struct { span: Span, token: Token };
 
-pub const State = enum { string, char, number, none };
-
-inline fn isSymbol(char: u21, comptime dot: bool) bool {
+inline fn isSymbol(char: u21) bool {
     return switch (char) {
         '&', // logical/bitwise and
         '|', // logical/bitwise or
@@ -172,12 +169,13 @@ inline fn isSymbol(char: u21, comptime dot: bool) bool {
         '>', // greater than comparison operator / right shift
         '*', // reference / multiplication operator / comment
         '/', // division operator / comment
+        '.', // field access
         '{', // open block / array
         '(', // open tuple / arguments
-        '[', // open array slicer
+        '[', // open array access
         '}', // close block / array
         ')', // close tuple / arguments
-        ']', // close array slicer
+        ']', // close array access
         ':', // explicit types / ternary selection
         ',', // separate arguments and array items
         '=', // set & equals comparison operator
@@ -188,19 +186,17 @@ inline fn isSymbol(char: u21, comptime dot: bool) bool {
         '@', // builtins / annotations
         ';', // statement separator
         => true,
-        '.', // field access
-        => dot, // not allowed in floats
         else => false,
     };
 }
 
-// the actual lexer
+// STRUCTURE
 
 script: *Script,
 
 arena: Arena,
 allocator: Allocator,
-output: std.ArrayList(LocatedToken),
+output: std.ArrayListUnmanaged(LocatedToken) = .{},
 
 pos: Pos = .{},
 last: Pos = .{},
@@ -219,9 +215,10 @@ const Self = @This();
 
 // INIT / DEINIT
 
-/// Initializes a new lexer.
-pub fn init(script: *Script) !Self {
-    var lexer = Self{
+pub fn init(script: *Script) !*Self {
+    var lexer = try script.engine.allocator.create(Self);
+
+    lexer.* = .{
         .script = script,
         .arena = Arena.init(script.engine.allocator),
         .allocator = undefined,
@@ -234,21 +231,17 @@ pub fn init(script: *Script) !Self {
     lexer.buf[1] = lexer.iter.next();
 
     lexer.allocator = lexer.arena.allocator();
-    lexer.output = std.ArrayList(LocatedToken).init(lexer.allocator);
     lexer.logger = Logger(.lexer).init(lexer.allocator, script);
 
     return lexer;
 }
 
-/// De-initializes the lexer.
-/// This should only be run after the output of the lexer is done being used.
 pub inline fn deinit(self: Self) void {
     self.arena.deinit();
 }
 
 // MISCELLANEOUS UTILITIES
 
-// Returns the last token the lexer outputted.
 pub inline fn getLastToken(self: *Self) ?LocatedToken {
     if (self.output.items.len == 0) return null;
     return self.output.items[self.output.items.len - 1];
@@ -258,19 +251,17 @@ pub inline fn finished(self: Self) bool {
     return (self.pos.raw >= self.script.src.len or self.failed);
 }
 
-inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
-    try self.logger.err(fmt, args, span, hi);
-    self.failed = true;
-}
-
 // IMPLEMENTATION
 
-// Adds the current word to the output.
+inline fn addToken(self: *Self, span: Span, token: Token) !void {
+    try self.output.append(self.allocator, .{ .span = span, .token = token });
+}
+
 fn addWord(self: *Self, comptime symbol: bool) !void {
-    if (self.word.len != 0) {
+    if (self.word.len > 0) {
         self.word.ptr = self.script.src.ptr + self.start.raw;
 
-        const tok: ?Token = blk: {
+        const token: ?Token = blk: {
             if (std.mem.eql(u8, self.word, "null")) break :blk .null;
             if (std.mem.eql(u8, self.word, "undefined")) break :blk .undefined;
             if (std.mem.eql(u8, self.word, "true")) break :blk .{ .bool = true };
@@ -282,15 +273,12 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
             } else break :blk null;
         };
 
-        if (tok) |token| try self.output.append(.{ .span = .{ self.start, self.last }, .token = token });
+        if (token) |tok| try self.addToken(.{ self.start, self.last }, tok);
 
         self.word.len = 0;
     }
 
-    if (symbol) try self.output.append(.{
-        .span = .{ self.pos, self.pos },
-        .token = .{ .symbol = @truncate(self.buf[0].code) },
-    });
+    if (symbol) try self.addToken(.{ self.pos, self.pos }, .{ .symbol = @truncate(self.buf[0].code) });
 }
 
 // Returns true if we've hit EOF.
@@ -306,33 +294,28 @@ inline fn advanceRead(self: *Self) !bool {
     return false;
 }
 
-// Advances the lexer position.
-// Skips separator characters.
 fn advance(self: *Self) !void {
     if (self.finished()) return error.UnexpectedEOF;
 
+    self.last = self.pos;
     if (self.buf[1]) |next_char| {
         self.buf[0] = next_char;
     } else {
         // no next char, we're done
-        // make sure we know we are
-        if (!self.finished()) {
-            self.pos.raw = self.script.src.len;
-            self.pos.col += 1;
-        }
-
+        self.pos.raw = self.script.src.len;
+        self.pos.col += 1;
         return;
     }
 
-    self.last = self.pos;
     self.pos.col += 1;
-
     self.buf[1] = self.iter.next();
 
-    if (isGap(self.buf[0].code)) {
-        if (self.basic) try self.addWord(false);
+    const check = if (self.basic) &isGap else &isNewLine;
+    if (check(self.buf[0].code)) {
+        // wont do anything if word len is 0, always call it
+        try @call(.always_inline, addWord, .{ self, false });
 
-        while (isGap(self.buf[0].code)) {
+        while (check(self.buf[0].code)) {
             const code1 = self.buf[0].code;
             if (isNewLine(code1)) {
                 self.pos.row += 1;
@@ -353,10 +336,13 @@ fn advance(self: *Self) !void {
     }
 
     self.pos.raw = self.buf[0].offset;
-    if (self.word.len == 0) self.start = self.pos;
 }
 
-// Validates and tokenizes a possible number.
+inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
+    try self.logger.err(fmt, args, span, hi);
+    self.failed = true;
+}
+
 inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     self.basic = false;
     defer self.basic = true;
@@ -390,7 +376,8 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
         try self.advance();
     }
 
-    while (!self.finished()) : (try self.advance()) {
+    var reached_end = false;
+    while (!reached_end) : (try self.advance()) {
         num: switch (self.buf[0].code) {
             '0'...'9', '_' => {},
             'f' => continue :num if (out.base == 10) 'i' else 'F',
@@ -424,36 +411,31 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
         }
 
         span[1] = self.pos;
-
-        if (exponent_reached and (self.buf[1].?.code == '+' or self.buf[1].?.code == '-')) continue;
-
-        if (isSymbol(self.buf[1].?.code, false) or isGap(self.buf[1].?.code)) {
-            try self.advance();
-            break;
-        }
+        reached_end = switch (self.buf[1].?.code) {
+            '+', '-', '.' => false,
+            else => |c| isSymbol(c) or isGap(c),
+        };
     }
 
     out.buf = self.script.src[after_base .. span[1].raw + 1];
 
-    if (type_char) |char| get_type: {
+    if (type_char) |char| {
         const start = self.pos;
-
-        while (!self.finished()) : (try self.advance()) {
-            if (isSymbol(self.buf[1].?.code, true) or isGap(self.buf[1].?.code)) {
-                span[1] = self.pos;
-                try self.advance();
-                break;
-            }
-        }
+        while (!(isSymbol(self.buf[1].?.code) or isGap(self.buf[1].?.code))) try self.advance();
+        span[1] = self.pos;
+        try self.advance();
 
         const type_string = self.script.src[start.raw .. span[1].raw + 1];
 
+        if (state == .f64 and char.code != 'f') {
+            return self.logger.err("floating-point numbers cannot become integers", .{}, span, start);
+        } else if (state == .i64 and char.code == 'u') {
+            return self.logger.err("unsigned integers cannot be explicitly signed", .{}, span, start);
+        }
+
         if (type_string.len > 1) {
             out.typ = NumberType.string_map.get(type_string);
-            if (out.typ == null) {
-                try self.logger.err("unknown type", .{}, .{ start, span[1] }, null);
-                break :get_type;
-            }
+            if (out.typ == null) try self.logger.err("unknown type", .{}, .{ start, span[1] }, null);
         } else out.typ = switch (char.code) {
             'n' => .bigint,
             'i' => .i64,
@@ -461,22 +443,15 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
             'f' => .f64,
             else => unreachable,
         };
-
-        if ((char.code == 'i' or char.code == 'n') and state == .f64) {
-            try self.logger.err("floating-point numbers cannot become signed integers", .{}, span, start);
-        } else if (char.code == 'u') {
-            if (state == .i64 and out.buf[0] == '-') {
-                try self.logger.err("unsigned integers cannot be negative", .{}, span, start);
-            } else if (state == .f64) {
-                try self.logger.err("floating-point numbers cannot become unsigned integers", .{}, span, start);
-            }
-        }
     }
 
-    try self.output.append(.{ .span = span, .token = .{ .number = out } });
+    try self.addToken(span, .{ .number = out });
 }
 
-fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
+fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
+    self.basic = false;
+    defer self.basic = true;
+
     const esc_seq_start = self.pos;
     try self.advance();
 
@@ -492,28 +467,23 @@ fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
         '{' => if (exit == '`') return '{',
         'x' => {
             try self.advance(); // Advance past 'x'.
+            const span = Span{ self.pos, self.pos.next() };
 
-            if (self.pos.raw + 1 + 2 >= self.script.src.len)
-                return error.UnexpectedEOF;
+            var chars: [2]u8 = undefined;
+            inline for (0..2) |i| {
+                chars[i] = @truncate(self.buf[0].code);
+                if (!(isHexadecimalChar(chars[i]) or chars[i] == '_')) {
+                    try self.logger.err("non-hex char in hex escape sequence", .{}, span, self.pos);
+                    return error.InvalidCharacter;
+                } else if (i == 0) try self.advance();
+            }
 
-            const hex_start = self.pos;
-            const chars: [2]u8 = .{
-                @truncate(self.buf[0].code),
-                @truncate(self.buf[1].?.code),
-            };
-            try self.advance();
-
-            return parseUnsigned(u8, &chars, 16) catch {
-                try self.logger.err("bad hexadecimal number", .{}, .{ hex_start, self.pos }, null); // Overflow is unreachable.
-                return 0xFFFD;
-            };
+            return parseUnsigned(u8, &chars, 16) catch unreachable;
         },
         'u' => {
             try self.advance(); // Advance past 'u'.
 
-            var fail_pos = self.pos;
-
-            if (self.buf[0].code == '{') parse: {
+            if (self.buf[0].code == '{' and !isNewLine(self.buf[1].?.code)) parse: {
                 try self.advance(); // Advance past '{'.
 
                 const esc_char_start = self.pos;
@@ -522,85 +492,82 @@ fn parseEscapeSequence(self: *Self, exit: u8) !u21 {
                 while (true) : (try self.advance()) {
                     if (self.buf[0].code == '}') break;
 
-                    if (!(isHexadecimalChar(self.buf[0].code) or self.buf[0].code == '_')) {
-                        fail_pos = self.pos;
-                        break :parse;
-                    } else if (isNewLine(self.buf[1].?.code)) {
-                        fail_pos = self.pos.next();
-                        try self.advance();
-                        break :parse;
-                    }
+                    if (!(isHexadecimalChar(self.buf[0].code) or self.buf[0].code == '_') or
+                        isNewLine(self.buf[1].?.code)) break :parse;
 
                     if (idx == 0) {
-                        while (!self.finished() and self.buf[0].code != '}') try self.advance();
+                        while (self.buf[0].code != '}') try self.advance();
                         try self.logger.err("escape sequence is too large", .{}, .{ esc_seq_start, self.pos }, null);
-                        return 0xFFFD;
+                        return error.Overflow;
                     } else idx -|= 1;
                 }
 
-                const char = parseUnsigned(u24, self.script.src[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
-                if (char > 0x10FFFF) {
-                    try self.logger.err("escape sequence is too large", .{}, .{ esc_seq_start, self.pos }, null);
-                    return 0xFFFD;
-                } else return @truncate(char);
+                return parseUnsigned(u21, self.script.src[esc_char_start.raw..self.pos.raw], 16) catch {
+                    try self.logger.err("escape sequence is too large", .{}, .{ esc_seq_start, self.pos }, null); // InvalidCharacter is unreachable.
+                    return error.Overflow;
+                };
             }
 
-            try self.logger.err("invalid escape sequence", .{}, .{ esc_seq_start, fail_pos }, fail_pos);
-            return 0xFFFD;
+            if (isNewLine(self.buf[1].?.code)) {
+                const fail_pos = self.pos.next();
+                try self.advance();
+                try self.fatal("escape sequence has no end", .{}, .{ esc_seq_start, fail_pos }, fail_pos);
+                return error.UnexpectedEOL;
+            }
+
+            try self.logger.err("non-hex char in hex escape sequence", .{}, .{ esc_seq_start, self.pos }, self.pos);
+            return error.InvalidCharacter;
         },
         else => |char| if (char == exit) return char,
     }
 
     try self.logger.err("invalid escape sequence", .{}, .{ esc_seq_start, self.pos }, self.pos);
-    return 0xFFFD;
+    return error.InvalidCharacter;
 }
 
-// Lex characters into the next token(s).
 pub fn next(self: *Self) !void {
     if (self.finished()) return;
 
-    const initial_len = self.output.items.len;
     const last_token = self.getLastToken();
+    const initial_len = self.output.items.len;
 
-    while (initial_len == self.output.items.len) : (try self.advance()) {
+    while (initial_len == self.output.items.len and !self.failed) : (try self.advance()) {
         if (self.word.len == 0) {
             var signed_number = (self.buf[0].code == '-' or self.buf[0].code == '+') and isNumberChar(self.buf[1].?.code);
             // if the last token was an expression, it's arithmetic. otherwise, it's a signed number.
-            if (signed_number and last_token != null) {
-                signed_number = switch (last_token.?.token) {
+            if (signed_number and last_token != null)
+                signed_number = !switch (last_token.?.token) {
                     // end of function call or expression in parenthesis
                     .symbol => |symbol| symbol == ')',
                     .keyword, .doc_comment => false,
                     else => true,
                 };
-            }
 
             if (isNumberChar(self.buf[0].code) or signed_number)
                 return self.tokenizeNumber(signed_number);
+
+            self.start = self.pos;
         }
 
         char: switch (self.buf[0].code) {
-            '"', '`' => |e| { // String parser.
-                self.basic = false;
-                defer self.basic = true;
-
+            '"', '`' => |exit| { // String parser.
                 const start = self.pos;
-                if (!self.fmt_string) try self.advance();
-                const inner_start = self.pos.raw;
-                var last = self.pos.raw;
+                var last = if (!self.fmt_string) blk: {
+                    try self.advance();
+                    break :blk start.raw + 1;
+                } else start.raw;
 
-                const exit: u8 = @truncate(e);
                 const formatted = exit == '`';
                 if (formatted) self.fmt_string = true;
 
                 var buffer = std.ArrayList(u8).init(self.allocator);
                 var out = Token.String{};
 
-                while (!self.finished()) : (try self.advance()) {
+                const real_start = last;
+                while (true) : (try self.advance()) {
                     const end = self.buf[0].code == exit;
-
                     if (end or (formatted and self.buf[0].code == '{')) {
-                        if (last == inner_start) {
+                        if (last == real_start) {
                             out.data.text = self.script.src[last..self.pos.raw];
                             out.data.managed = false;
                         } else {
@@ -616,29 +583,23 @@ pub fn next(self: *Self) !void {
                         break;
                     } else if (self.buf[0].code == '\\') {
                         try buffer.appendSlice(self.script.src[last..self.pos.raw]);
-                        const c = try self.parseEscapeSequence(exit);
+                        const c = self.parseEscapeSequence(exit) catch if (self.failed) return else 0xFFFD;
                         try unicode.writeCodepointToUtf8(c, buffer.writer());
                         last = self.buf[1].?.offset;
                     }
                 }
 
-                try self.output.append(.{
-                    .span = .{ start, self.pos },
-                    .token = .{ .string = out },
-                });
+                try self.addToken(.{ start, self.pos }, .{ .string = out });
             },
             '\'' => { // Character parser.
-                self.basic = false;
-                defer self.basic = true;
-
                 const start = self.pos;
-                var char: ?u21 = null;
+                var char: u21 = 0xFFFD;
 
                 try self.advance();
                 if (self.buf[0].code == '\'') {
                     try self.logger.err("empty characters not allowed", .{}, .{ start, self.pos }, null);
                 } else if (self.buf[0].code == '\\') {
-                    char = try self.parseEscapeSequence('\'');
+                    char = self.parseEscapeSequence('\'') catch if (self.failed) return else 0xFFFD;
                     try self.advance();
                 } else if (self.buf[1].?.code == '\'') {
                     char = self.buf[0].code;
@@ -646,21 +607,14 @@ pub fn next(self: *Self) !void {
                 }
 
                 if (self.buf[0].code != '\'') {
-                    while (!self.finished() and self.buf[0].code != '\'' and !isNewLine(self.buf[1].?.code)) try self.advance();
+                    while (self.buf[0].code != '\'') : (try self.advance())
+                        if (isNewLine(self.buf[1].?.code))
+                            return self.fatal("character has no end", .{}, .{ start, start }, null);
 
-                    if (self.buf[0].code == '\'') {
-                        try self.fatal("character is too large", .{}, .{ start, self.pos }, null);
-                    } else {
-                        try self.fatal("character has no end", .{}, .{ start, start }, null);
-                    }
-
-                    try self.logger.info("strings are defined with double quotes", .{}, null, null);
+                    if (char != 0xFFFD) try self.logger.err("character is too large", .{}, .{ start, self.pos }, null);
                 }
 
-                try self.output.append(.{
-                    .span = .{ start, self.pos },
-                    .token = .{ .char = char orelse 0xFFFD },
-                });
+                try self.addToken(.{ start, self.pos }, .{ .char = char });
             },
             // Symbol or comment.
             '/' => if (self.buf[1].?.code == '/' or self.buf[1].?.code == '*') {
@@ -673,12 +627,10 @@ pub fn next(self: *Self) !void {
                 switch (self.buf[0].code) {
                     // Single-line comment.
                     '/' => {
-                        if (isNewLine(self.buf[1].?.code)) continue;
-                        try self.advance();
-                        doc = self.buf[0].code == '/';
+                        if (isNewLine(self.buf[1].?.code)) continue else try self.advance();
                         out.top_level = self.buf[0].code == '!';
-                        if (isNewLine(self.buf[1].?.code)) continue;
-                        if (doc or out.top_level) try self.advance();
+                        doc = out.top_level or self.buf[0].code == '/';
+                        if (isNewLine(self.buf[1].?.code)) continue else try self.advance();
 
                         start = self.pos;
                         while (!isNewLine(self.buf[1].?.code)) try self.advance();
@@ -687,8 +639,9 @@ pub fn next(self: *Self) !void {
                     // Multi-line comment.
                     '*' => {
                         try self.advance();
-                        doc = self.buf[0].code == '*';
-                        if (doc) try self.advance();
+                        out.top_level = self.buf[0].code == '!';
+                        doc = out.top_level or self.buf[0].code == '*';
+                        try self.advance();
 
                         start = self.pos;
                         while (!(self.buf[0].code == '*' and self.buf[1].?.code == '/')) : (try self.advance()) span[1] = self.pos;
@@ -698,25 +651,19 @@ pub fn next(self: *Self) !void {
                 }
 
                 if (out.top_level and span[0].raw != 0)
-                    return self.fatal("top-level doc comment must be at the start of the file", .{}, span, null);
+                    try self.logger.err("top-level doc comment must be at the start of the file", .{}, span, null);
 
                 out.text = self.script.src[start.raw .. span[1].raw + 1];
-
-                if (doc or out.top_level) try self.output.append(.{
-                    .span = span,
-                    .token = .{ .doc_comment = out },
-                });
+                if (doc) try self.addToken(span, .{ .doc_comment = out });
             } else try self.addWord(true), // Symbol.
             // Symbol or end of format string expression.
             '}' => if (self.fmt_string) {
                 try self.advance();
                 continue :char '`';
             } else try self.addWord(true), // Symbol.
-            else => if (!isSymbol(self.buf[0].code, true)) {
-                self.word.len +%= self.buf[0].len;
+            else => if (!isSymbol(self.buf[0].code)) {
+                self.word.len += self.buf[0].len;
             } else try self.addWord(true), // Symbol.
         }
-
-        if (self.failed) return;
     }
 }

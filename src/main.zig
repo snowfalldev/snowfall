@@ -18,9 +18,14 @@ pub fn main() !void {
 
     defer engine.deinit();
 
-    for (tokens.items) |token| {
+    if (true) return;
+
+    const padding: [25]u8 = .{' '} ** 25;
+
+    for (tokens) |token| {
         const string = try token.token.toDebugString(allocator);
         defer allocator.free(string);
-        std.debug.print(" - {{ {}..{}, {s} }}\n", .{ token.span[0], token.span[1], string });
+        const offset = @min(25 -| string.len, 25);
+        std.debug.print(" - {s} {s}[{}..{}]\n", .{ string, padding[0..offset], token.span[0], token.span[1] });
     }
 }
