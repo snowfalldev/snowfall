@@ -48,7 +48,6 @@ pub const Token = union(enum) {
     pub const Number = struct {
         buf: []const u8 = "",
         typ: ?NumberType = null,
-        base: u8 = 10,
     };
 
     pub const String = struct {
@@ -121,7 +120,7 @@ pub const Token = union(enum) {
                 try writer.writeByte('\'');
             },
             .number => |v| {
-                try writer.print("number: {s} (base {})", .{ v.buf, v.base });
+                try writer.print("number: {s}", .{v.buf});
                 if (v.typ) |t| try writer.print(" ({s})", .{@tagName(t)});
             },
             .string => |v| {
@@ -298,17 +297,8 @@ fn advance(self: *Self) !void {
     if (self.finished()) return error.UnexpectedEOF;
 
     self.last = self.pos;
-    if (self.buf[1]) |next_char| {
-        self.buf[0] = next_char;
-    } else {
-        // no next char, we're done
-        self.pos.raw = self.script.src.len;
-        self.pos.col += 1;
-        return;
-    }
-
+    if (try self.advanceRead()) return error.UnexpectedEOF;
     self.pos.col += 1;
-    self.buf[1] = self.iter.next();
 
     const check = if (self.basic) &isGap else &isNewLine;
     if (check(self.buf[0].code)) {
@@ -322,7 +312,7 @@ fn advance(self: *Self) !void {
                 self.pos.col = 0;
             } else self.pos.col += 1;
 
-            if (try self.advanceRead()) return;
+            if (try self.advanceRead()) return error.UnexpectedEOF;
 
             const code2 = self.buf[0].code;
             if ((code1 == '\r' and code2 == '\n') or
@@ -330,7 +320,7 @@ fn advance(self: *Self) !void {
             {
                 // encountered CRLF or LFCR, skip another character
                 // this allows us to treat these as one new line
-                if (try self.advanceRead()) return;
+                if (try self.advanceRead()) return error.UnexpectedEOF;
             }
         }
     }
@@ -347,61 +337,60 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     self.basic = false;
     defer self.basic = true;
 
+    var base: u8 = 10;
+    var state = NumberType.u64;
     var span = Span{ self.pos, self.pos };
     var out = Token.Number{};
-
-    if (self.buf[0].code == '0') {
-        out.base = switch (self.buf[1].?.code) {
-            'b', 'B' => 2,
-            'o', 'O' => 8,
-            'x', 'X' => 16,
-            else => 10,
-        };
-
-        if (out.base != 10) {
-            try self.advance();
-            try self.advance();
-        }
-    }
-
-    const after_base = self.pos.raw;
-
-    var state = NumberType.u64;
-    var exponent_reached = false;
-    var exp_sign_reached = false;
-    var type_char: ?CodePoint = null;
 
     if (signed) {
         state = NumberType.i64;
         try self.advance();
     }
 
-    var reached_end = false;
-    while (!reached_end) : (try self.advance()) {
+    if (self.buf[0].code == '0') {
+        base = switch (self.buf[1].?.code) {
+            'b', 'B' => 2,
+            'o', 'O' => 8,
+            'x', 'X' => 16,
+            else => 10,
+        };
+
+        if (base != 10) {
+            try self.advance();
+            try self.advance();
+        }
+    }
+
+    var end_reached = false;
+    var exponent_reached = false;
+    var exp_sign_reached = false;
+    var type_char: ?CodePoint = null;
+
+    while (!end_reached) : (try self.advance()) {
         num: switch (self.buf[0].code) {
             '0'...'9', '_' => {},
-            'f' => continue :num if (out.base == 10) 'i' else 'F',
+            'f' => continue :num if (base == 10) 'i' else 'F',
             'n', 'i', 'u' => {
                 type_char = self.buf[0];
                 break;
             },
-            'a'...'d', 'A'...'D', 'F' => if (out.base != 16)
-                return self.fatal("hex char in base {} number", .{out.base}, span, self.pos),
-            'e', 'E' => switch (out.base) {
+            'a'...'d', 'A'...'D', 'F' => if (base != 16)
+                return self.fatal("hex char in base {} number", .{base}, span, self.pos),
+            'e', 'E' => switch (base) {
                 16 => {},
                 10 => if (state == .f64) {
                     if (!exponent_reached) {
                         exponent_reached = true;
                     } else return self.fatal("hex char in float exponent", .{}, span, self.pos);
                 } else return self.fatal("hex char in base 10 number", .{}, span, self.pos),
-                else => return self.fatal("hex char in base {} number", .{out.base}, span, self.pos),
+                else => return self.fatal("hex char in base {} number", .{base}, span, self.pos),
             },
             '+', '-' => if (exponent_reached) {
                 if (exp_sign_reached) break;
                 exp_sign_reached = true;
             } else break,
             '.' => {
-                if (state == NumberType.f64 or out.base != 10) break;
+                if (state == NumberType.f64 or base != 10) break;
                 // if character after . in number is not a number
                 // then it's not a float, instead a field access
                 if (!isNumberChar(self.buf[1].?.code)) break;
@@ -411,13 +400,13 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
         }
 
         span[1] = self.pos;
-        reached_end = switch (self.buf[1].?.code) {
+        end_reached = switch (self.buf[1].?.code) {
             '+', '-', '.' => false,
             else => |c| isSymbol(c) or isGap(c),
         };
     }
 
-    out.buf = self.script.src[after_base .. span[1].raw + 1];
+    out.buf = self.script.src[span[0].raw .. span[1].raw + 1];
 
     if (type_char) |char| {
         const start = self.pos;
@@ -560,7 +549,9 @@ pub fn next(self: *Self) !void {
                 const formatted = exit == '`';
                 if (formatted) self.fmt_string = true;
 
-                var buffer = std.ArrayList(u8).init(self.allocator);
+                // use the engine allocator so they don't free after arena deinit
+                const allocator = self.script.engine.allocator;
+                var buffer = std.ArrayList(u8).init(allocator);
                 var out = Token.String{};
 
                 const real_start = last;

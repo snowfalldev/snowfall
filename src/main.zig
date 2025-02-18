@@ -18,8 +18,6 @@ pub fn main() !void {
 
     defer engine.deinit();
 
-    if (true) return;
-
     const padding: [25]u8 = .{' '} ** 25;
 
     for (tokens) |token| {

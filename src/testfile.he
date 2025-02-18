@@ -37,6 +37,7 @@ pub func main() void {
   std.println("0.2 * 3.3 = ", 6.6e-1f17);
   std.println(`squiggly brackets: \{}`);
   @panic("welp");
+  const test0 = -0xFFi; // shouldn't fail
   const test1 = 1.0i64;
   const test2 = 1.0u;
   const test3 = +1u; // explicitly signed
