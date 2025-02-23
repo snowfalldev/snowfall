@@ -1,6 +1,3 @@
-// A terrible lexer that does half the work a parser should do.
-// Hopefully that'll mean the parser's easy to do.
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Arena = std.heap.ArenaAllocator;
@@ -47,7 +44,7 @@ pub const Token = union(enum) {
 
     pub const Number = struct {
         buf: []const u8 = "",
-        typ: ?NumberType = null,
+        float: bool = false,
     };
 
     pub const String = struct {
@@ -87,7 +84,6 @@ pub const Token = union(enum) {
         @"union",  // define union
         interface, // define interface
 
-        loop,        // define infinite loop
         @"while",    // define while loop
         @"for",      // define for loop
         @"break",    // loop break
@@ -119,10 +115,7 @@ pub const Token = union(enum) {
                 try unicode.writeCodepointToUtf8(v, writer);
                 try writer.writeByte('\'');
             },
-            .number => |v| {
-                try writer.print("number: {s}", .{v.buf});
-                if (v.typ) |t| try writer.print(" ({s})", .{@tagName(t)});
-            },
+            .number => |v| try writer.print("number: {s}", .{v.buf}),
             .string => |v| {
                 try writer.print("string: \"{s}\"", .{v.data.text});
                 if (v.data.managed) try writer.writeAll(" (managed)");
@@ -159,8 +152,8 @@ pub const LocatedToken = struct { span: Span, token: Token };
 
 inline fn isSymbol(char: u21) bool {
     return switch (char) {
-        '&', // logical/bitwise and
-        '|', // logical/bitwise or
+        '&', // bitwise and
+        '|', // bitwise or
         '!', // logical not
         '~', // bitwise not
         '^', // bitwise xor
@@ -280,39 +273,39 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
     if (symbol) try self.addToken(.{ self.pos, self.pos }, .{ .symbol = @truncate(self.buf[0].code) });
 }
 
-// Returns true if we've hit EOF.
-inline fn advanceRead(self: *Self) !bool {
+inline fn advanceRead(self: *Self) !void {
+    defer self.buf[1] = self.iter.next();
     self.buf[0] = self.buf[1] orelse {
         // no next char, we're done
         self.pos.raw = self.script.src.len;
         self.pos.col += 1;
-        return true;
+        return error.UnexpectedEOF;
     };
+}
 
-    self.buf[1] = self.iter.next();
-    return false;
+inline fn advanceCheck(self: Self, char: u21) bool {
+    return isNewLine(char) or (self.basic and unicode.isSpace(char));
 }
 
 fn advance(self: *Self) !void {
     if (self.finished()) return error.UnexpectedEOF;
 
     self.last = self.pos;
-    if (try self.advanceRead()) return error.UnexpectedEOF;
+    try self.advanceRead();
     self.pos.col += 1;
 
-    const check = if (self.basic) &isGap else &isNewLine;
-    if (check(self.buf[0].code)) {
+    if (self.advanceCheck(self.buf[0].code)) {
         // wont do anything if word len is 0, always call it
         try @call(.always_inline, addWord, .{ self, false });
 
-        while (check(self.buf[0].code)) {
+        while (self.advanceCheck(self.buf[0].code)) {
             const code1 = self.buf[0].code;
             if (isNewLine(code1)) {
                 self.pos.row += 1;
                 self.pos.col = 0;
             } else self.pos.col += 1;
 
-            if (try self.advanceRead()) return error.UnexpectedEOF;
+            self.advanceRead() catch return;
 
             const code2 = self.buf[0].code;
             if ((code1 == '\r' and code2 == '\n') or
@@ -320,7 +313,7 @@ fn advance(self: *Self) !void {
             {
                 // encountered CRLF or LFCR, skip another character
                 // this allows us to treat these as one new line
-                if (try self.advanceRead()) return error.UnexpectedEOF;
+                self.advanceRead() catch return;
             }
         }
     }
@@ -337,16 +330,11 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     self.basic = false;
     defer self.basic = true;
 
-    var base: u8 = 10;
-    var state = NumberType.u64;
     var span = Span{ self.pos, self.pos };
     var out = Token.Number{};
+    var base: u8 = 10;
 
-    if (signed) {
-        state = NumberType.i64;
-        try self.advance();
-    }
-
+    if (signed) try self.advance();
     if (self.buf[0].code == '0') {
         base = switch (self.buf[1].?.code) {
             'b', 'B' => 2,
@@ -364,37 +352,30 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     var end_reached = false;
     var exponent_reached = false;
     var exp_sign_reached = false;
-    var type_char: ?CodePoint = null;
 
     while (!end_reached) : (try self.advance()) {
-        num: switch (self.buf[0].code) {
-            '0'...'9', '_' => {},
-            'f' => continue :num if (base == 10) 'i' else 'F',
-            'n', 'i', 'u' => {
-                type_char = self.buf[0];
-                break;
-            },
-            'a'...'d', 'A'...'D', 'F' => if (base != 16)
-                return self.fatal("hex char in base {} number", .{base}, span, self.pos),
-            'e', 'E' => switch (base) {
-                16 => {},
-                10 => if (state == .f64) {
+        switch (self.buf[0].code) {
+            '0'...'1', '_' => {},
+            '2'...'7' => if (base == 2) return self.fatal("octal digit in base 2 number", .{}, span, self.pos),
+            '8'...'9' => if (base < 10) return self.fatal("decimal digit in base {} number", .{base}, span, self.pos),
+            'a'...'d', 'A'...'D', 'f', 'F' => if (base != 16) return self.fatal("hex digit in base {} number", .{base}, span, self.pos),
+            'e', 'E' => if (base != 16) {
+                if (base != 10) return self.fatal("hex digit in base {} number", .{base}, span, self.pos);
+                if (out.float) {
                     if (!exponent_reached) {
                         exponent_reached = true;
-                    } else return self.fatal("hex char in float exponent", .{}, span, self.pos);
-                } else return self.fatal("hex char in base 10 number", .{}, span, self.pos),
-                else => return self.fatal("hex char in base {} number", .{base}, span, self.pos),
+                    } else return self.fatal("hex digit in float exponent", .{}, span, self.pos);
+                } else return self.fatal("hex digit in base 10 number", .{}, span, self.pos);
             },
-            '+', '-' => if (exponent_reached) {
-                if (exp_sign_reached) break;
+            '+', '-' => if (exponent_reached and !exp_sign_reached) {
                 exp_sign_reached = true;
             } else break,
             '.' => {
-                if (state == NumberType.f64 or base != 10) break;
+                if (out.float or base != 10) break;
                 // if character after . in number is not a number
                 // then it's not a float, instead a field access
                 if (!isNumberChar(self.buf[1].?.code)) break;
-                state = NumberType.f64;
+                out.float = true;
             },
             else => return self.fatal("unexpected character in number", .{}, span, self.pos),
         }
@@ -407,32 +388,6 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     }
 
     out.buf = self.script.src[span[0].raw .. span[1].raw + 1];
-
-    if (type_char) |char| {
-        const start = self.pos;
-        while (!(isSymbol(self.buf[1].?.code) or isGap(self.buf[1].?.code))) try self.advance();
-        span[1] = self.pos;
-        try self.advance();
-
-        const type_string = self.script.src[start.raw .. span[1].raw + 1];
-
-        if (state == .f64 and char.code != 'f') {
-            return self.logger.err("floating-point numbers cannot become integers", .{}, span, start);
-        } else if (state == .i64 and char.code == 'u') {
-            return self.logger.err("unsigned integers cannot be explicitly signed", .{}, span, start);
-        }
-
-        if (type_string.len > 1) {
-            out.typ = NumberType.string_map.get(type_string);
-            if (out.typ == null) try self.logger.err("unknown type", .{}, .{ start, span[1] }, null);
-        } else out.typ = switch (char.code) {
-            'n' => .bigint,
-            'i' => .i64,
-            'u' => .u64,
-            'f' => .f64,
-            else => unreachable,
-        };
-    }
 
     try self.addToken(span, .{ .number = out });
 }
@@ -471,13 +426,12 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
         },
         'u' => {
             try self.advance(); // Advance past 'u'.
+            const esc_char_start = self.pos.next();
 
             if (self.buf[0].code == '{' and !isNewLine(self.buf[1].?.code)) parse: {
                 try self.advance(); // Advance past '{'.
 
-                const esc_char_start = self.pos;
                 var idx: usize = 5;
-
                 while (true) : (try self.advance()) {
                     if (self.buf[0].code == '}') break;
 
@@ -504,7 +458,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
                 return error.UnexpectedEOL;
             }
 
-            try self.logger.err("non-hex char in hex escape sequence", .{}, .{ esc_seq_start, self.pos }, self.pos);
+            try self.logger.err("non-hex char in hex escape sequence", .{}, .{ esc_char_start, self.pos }, self.pos);
             return error.InvalidCharacter;
         },
         else => |char| if (char == exit) return char,

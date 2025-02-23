@@ -20,8 +20,8 @@ const ListType = @"type".ListType;
 const SetType = @"type".SetType;
 const MapType = @"type".MapType;
 
-const ReferenceTypes = @"type".ReferenceTypes;
-const ReferenceType = @"type".ReferenceType;
+const Scope = @import("Scope.zig");
+const ast = @import("../ast.zig");
 
 // ALL VALUES
 
@@ -29,12 +29,12 @@ pub const Value = union(Types) {
     builtin: BuiltinValue,
     structured: StructuredValue,
     collection: CollectionValue,
-    reference: *Value,
+    reference: *Scope.Variable,
 
     pub inline fn isType(self: Value, typ: *const Type) bool {
         if (@as(Types, self) != @as(Types, typ.*)) return false;
         return switch (self) {
-            .builtin => |v| v.isBuiltinType(typ.builtin),
+            .builtin => |v| v.isType(typ),
             .structured => |v| v.isType(typ),
         };
     }
@@ -43,20 +43,21 @@ pub const Value = union(Types) {
         return self == .builtin and self.builtin.isBuiltinType(typ);
     }
 
-    pub inline fn hash(self: Value, allocator: Allocator) u64 {
+    pub inline fn hash(self: Value) u64 {
         return switch (self) {
-            .builtin => |v| v.hash(allocator),
+            .builtin => |v| v.hash(),
             .reference => |v| @intCast(@intFromPtr(v)),
             else => @panic("unimplemented"),
         };
     }
 
-    pub inline fn print(self: Value, comptime tagged: bool, writer: anytype) !void {
+    pub inline fn print(self: Value, writer: anytype) !void {
         return switch (self) {
-            .builtin => |v| v.print(tagged, writer),
+            .builtin => |v| v.print(writer),
             .reference => |v| {
-                if (tagged) writer.writeAll("(ref) ");
-                v.print(tagged, writer);
+                v.lock.lockShared();
+                defer v.lock.unlockShared();
+                v.value.print(writer);
             },
             else => @panic("unimplemented"),
         };
@@ -65,47 +66,42 @@ pub const Value = union(Types) {
 
 // BUILT-IN VALUES
 
-const number = @import("value/number.zig");
-pub const NumberType = number.NumberType;
-pub const Number = number.Number;
-
+pub const Number = @import("value/number.zig").Number;
 pub const String = @import("value/String.zig");
+const unicode = @import("../unicode.zig");
 
 pub const BuiltinValue = union(enum) {
     number: Number,
     string: String,
-    maybe: ?*const Value,
+    char: u21,
+    bool: bool,
+    void,
+    //maybe: ?*const Value,
 
-    pub inline fn isType(self: BuiltinValue, typ: *const Type) bool {
-        if (typ.* != .builtin) return false;
-        return self.isBuiltinType(typ.*.builtin);
-    }
+    // UTILITIES
 
-    pub inline fn isBuiltinType(self: BuiltinValue, typ: BuiltinType) bool {
+    pub fn hash(self: BuiltinValue) u64 {
         return switch (self) {
-            .number => |v| v.isBuiltinType(typ),
-            .string => typ == .string,
-            .maybe => typ == .maybe,
-        };
-    }
-
-    pub inline fn hash(self: BuiltinValue, allocator: Allocator) u64 {
-        return switch (self) {
-            .number => |v| v.hash(allocator),
+            .number => |v| v.hash(),
             .string => |v| v.hash(),
-            .maybe => |o| if (o) |v| v.hash(allocator) else 0,
+            .char => |v| v,
+            .bool => |v| @intFromBool(v),
+            .void => 0,
+            //.maybe => |o| if (o) |v| v.hash() else 0,
         };
     }
 
-    pub inline fn print(self: BuiltinValue, comptime tagged: bool, writer: anytype) !void {
+    pub fn print(self: BuiltinValue, writer: anytype) !void {
         return switch (self) {
-            .number => |v| v.print(tagged, writer),
-            .string => |v| v.print(tagged, writer),
-            .maybe => |o| maybe: {
-                if (tagged) writer.writeAll("maybe: ");
-                if (o) |v| break :maybe v.print(tagged, writer);
-                break :maybe writer.writeAll("null");
-            },
+            .number => |v| v.print(writer),
+            .string => |v| v.print(writer),
+            .char => |v| unicode.writeCodepointToUtf8(v, writer),
+            .bool => |v| writer.print("{}", .{v}),
+            .void => writer.writeAll("void"),
+            //.maybe => |o| maybe: {
+            //    if (o) |v| break :maybe v.print(writer);
+            //    break :maybe writer.writeAll("null");
+            //},
         };
     }
 };
@@ -139,7 +135,7 @@ pub const StructValue = struct {
 
 pub const EnumValue = struct {
     typ: *const EnumType,
-    selected: []const u8,
+    selected: usize,
 };
 
 pub const UnionValue = struct {
@@ -175,6 +171,7 @@ pub const List = struct {
     inner: std.ArrayList(Value),
 
     pub inline fn append(self: *List, v: Value) !void {
+        if (!v.isType(self.typ.item)) return error.BadType;
         try self.inner.append(v);
     }
 };
@@ -183,11 +180,13 @@ pub const Set = struct {
     typ: *const SetType,
     inner: std.AutoHashMap(u64, void),
 
-    pub inline fn put(self: *Map, v: Value) !void {
+    pub inline fn put(self: *Set, v: Value) !void {
+        if (!v.isType(self.typ.item)) return error.BadType;
         try self.inner.put(v.hash(self.inner.allocator), void{});
     }
 
-    pub inline fn has(self: *Map, v: Value) bool {
+    pub inline fn has(self: *Set, v: Value) bool {
+        if (!v.isType(self.typ.item)) return false;
         return self.inner.contains(v.hash(self.inner.allocator));
     }
 };
@@ -203,11 +202,4 @@ pub const Map = struct {
     pub inline fn has(self: *Map, v: Value) bool {
         return self.inner.contains(v.hash(self.inner.allocator));
     }
-};
-
-// REFERENCES
-
-pub const ReferenceValue = union(ReferenceTypes) {
-    constant: *const Value,
-    mutable: *Value,
 };

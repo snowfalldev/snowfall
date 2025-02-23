@@ -64,14 +64,14 @@ pub inline fn debugChar(char: u21) !void {
 // CHARACTER CATEGORIZATION
 
 // Does this character function as some gap in text?
-pub fn isGap(code: u21) bool {
-    return isSpace(code) or isNewLine(code);
+pub fn isGap(char: u21) bool {
+    return isSpace(char) or isNewLine(char);
 }
 
 // Is this character an "effective" space?
 // Unicode Zs + Zp categories with tab added.
-pub fn isSpace(code: u21) bool {
-    return switch (code) {
+pub fn isSpace(char: u21) bool {
+    return switch (char) {
         ' ',
         '\t',
         0x00A0,
@@ -87,8 +87,8 @@ pub fn isSpace(code: u21) bool {
 }
 
 // Does this character start a new line?
-pub fn isNewLine(code: u21) bool {
-    return switch (code) {
+pub fn isNewLine(char: u21) bool {
+    return switch (char) {
         '\n',
         '\r',
         0x2028,

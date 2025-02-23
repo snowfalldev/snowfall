@@ -30,17 +30,14 @@ pub func main() void {
   std.println("Hello, world!");
   std.print('\u{1F480 }');
   std.print('\u{FFFFFFFFF}');
+  std.print('\u{FFFFFF}');
   std.print(" <- skull\n\u{1F480}\u{1F480}💀 <- oh it's here thrice\n");
   std.println(`1 + 2 = {1 + 2}`);
   std.println("0.1 * 5.5 = ", 0.55);
-  std.println(`3 + 1 = {4u32}`);
-  std.println("0.2 * 3.3 = ", 6.6e-1f17);
+  std.println(`3 + 1 = {4}`);
+  std.println("0.2 * 3.3 = ", 6.6e-1);
   std.println(`squiggly brackets: \{}`);
   @panic("welp");
-  const test0 = -0xFFi; // shouldn't fail
-  const test1 = 1.0i64;
-  const test2 = 1.0u;
-  const test3 = +1u; // explicitly signed
   const epic_fail = '';
   const epic_fail_2 = '
 }

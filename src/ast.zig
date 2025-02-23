@@ -111,13 +111,15 @@ pub const Operand = union(enum) {
 // EXPRESSIONS
 
 pub const Expression = union(enum) {
-    operation: *Operation,
     operand: *Operand,
+    operation: *Operation,
     logical_not: *Expression,
     bitwise_not: *Expression,
 };
 
 // OPERATIONS
+
+pub const Chainer = enum { @"and", @"or" };
 
 pub const Comparator = enum(u8) {
     // zig fmt: off
@@ -126,8 +128,8 @@ pub const Comparator = enum(u8) {
     gt_eq, lt_eq,
     // zig fmt: on
 
-    pub inline fn toString(op: Operator) []const u8 {
-        return switch (op) {
+    pub inline fn toString(cmp: Comparator) []const u8 {
+        return switch (cmp) {
             .eq => "==",
             .ne => "!=",
 
@@ -140,57 +142,70 @@ pub const Comparator = enum(u8) {
     }
 };
 
-pub const Chainer = enum(u8) { @"and", @"or" };
-
-pub const Operator = enum(u8) {
+pub const BitwiseOp = enum {
     // zig fmt: off
-    sum, sub,
-    div, mul, mod,
-    ls, rls, ras,
-    bw_and, bw_or, bw_xor,
+    ls, rs, urs,
+    @"and", @"or", xor,
     // zig fmt: on
 
-    const Self = @This();
-
-    pub inline fn toString(op: Operator) []const u8 {
+    pub inline fn toString(op: BitwiseOp) []const u8 {
         return switch (op) {
-            .sum => "+",
-            .sub => "-",
-
-            .div => "/",
-            .mul => "*",
-            .mod => "%",
-
             .ls => "<<",
-            .rls => ">>",
-            .ras => ">>>",
+            .rs => ">>",
+            .urs => ">>>",
 
-            .bw_and => "&",
-            .bw_or => "|",
-            .bw_xor => "^",
+            .@"and" => "&",
+            .@"or" => "|",
+            .xor => "^",
         };
     }
 
-    pub inline fn fromSymbol(symbol: u8) ?Self {
+    pub inline fn fromSymbol(symbol: u8) ?BitwiseOp {
         return switch (symbol) {
-            '+' => .sum,
-            '-' => .sub,
-            '/' => .div,
-            '*' => .mul,
-            '%' => .mod,
-            '&' => .bw_and,
-            '|' => .bw_or,
-            '^' => .bw_xor,
+            '&' => .@"and",
+            '|' => .@"or",
+            '^' => .xor,
             else => null,
         };
     }
 };
 
+pub const MathOp = enum {
+    // zig fmt: off
+    add, sub,
+    mul, div, mod,
+    // zig fmt: on
+
+    pub inline fn toString(op: MathOp) []const u8 {
+        return switch (op) {
+            .add => "+",
+            .sub => "-",
+
+            .mul => "*",
+            .div => "/",
+            .mod => "%",
+        };
+    }
+
+    pub inline fn fromSymbol(symbol: u8) ?MathOp {
+        return switch (symbol) {
+            '+' => .add,
+            '-' => .sub,
+            '*' => .mul,
+            '/' => .div,
+            '%' => .mod,
+            else => null,
+        };
+    }
+};
+
+pub const Operator = union(enum) { math: MathOp, bw: BitwiseOp };
+
 pub const Operation = struct {
     lhs: Expression,
     op: union(enum) {
         cmp: Comparator,
-        math: Operator,
+        op: Operator,
         chain: Chainer,
     },
     rhs: Expression,

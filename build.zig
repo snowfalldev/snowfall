@@ -13,6 +13,9 @@ pub fn build(b: *std.Build) anyerror!void {
     const static_map = b.dependency("static-map", .{});
     const static_map_mod = static_map.module("static-map");
 
+    const zig_gc = b.dependency("zig-gc", .{});
+    const zig_gc_mod = zig_gc.module("gc");
+
     // MODULE
 
     const mod = b.addModule("helium", .{
@@ -22,6 +25,7 @@ pub fn build(b: *std.Build) anyerror!void {
         .imports = &.{
             .{ .name = "code_point", .module = code_point_mod },
             .{ .name = "static-map", .module = static_map_mod },
+            .{ .name = "gc", .module = zig_gc_mod },
         },
     });
 

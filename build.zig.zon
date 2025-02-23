@@ -10,6 +10,10 @@
             .url = "git+https://github.com/travisstaloch/static-map#1c091e0348183dc72af20e7f061456d40a60f9d2",
             .hash = "1220e8f3ccc4f9c9269e0cbd0e2af55ece3bdd7342899fcb59d0bb8f64d0432f970e",
         },
+        .@"zig-gc" = .{
+            .url = "git+https://github.com/notsatvrn/zig-gc.git#15d28a2c9e381bec5f08f878ea0d56e024207b85",
+            .hash = "1220cc1dc4fb79703c65c1c5b87a1e7444df6bda5dc73e764d11d04d1c8b7a98989c",
+        },
     },
     .paths = .{""},
 }

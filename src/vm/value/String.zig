@@ -15,15 +15,14 @@ pub inline fn hash(self: Self) u64 {
     return std.hash.Wyhash.hash(hash_seed, self.inner);
 }
 
-pub inline fn print(self: Self, comptime tagged: bool, writer: anytype) !void {
-    if (tagged) try writer.writeAll("string: \"");
+pub inline fn print(self: Self, writer: anytype) !void {
     try writer.writeAll(self.inner);
-    if (tagged) try writer.writeByte('"');
 }
 
-pub fn addValue(self: Self, val: Value, allocator: Allocator) !Self {
-    var out = try std.ArrayList(u8).initCapacity(allocator, self.inner.len);
-    out.appendSliceAssumeCapacity(self.inner);
-    val.print(false, out.writer());
+pub fn add(self: Self, val: Value, prepend: bool, allocator: Allocator) !Self {
+    var out = std.ArrayList(u8).init(allocator);
+    if (prepend) try val.print(false, out.writer());
+    try out.appendSlice(self.inner);
+    if (!prepend) try val.print(false, out.writer());
     return .{ .inner = out.toOwnedSlice() };
 }

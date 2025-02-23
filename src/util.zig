@@ -1,6 +1,12 @@
-const std = @import("std");
+const StaticStringMap = @import("static-map").StaticStringMap;
 
-pub inline fn mkStringMap(comptime T: type) std.StaticStringMap(T) {
+fn MkStringMapRetT(comptime T: type) type {
+    const type_info = @typeInfo(T);
+    if (type_info != .@"enum") @compileError("mkStringMap with non-enum type");
+    return StaticStringMap(T, type_info.@"enum".fields.len);
+}
+
+pub inline fn mkStringMap(comptime T: type) MkStringMapRetT(T) {
     const type_info = @typeInfo(T);
     if (type_info != .@"enum") @compileError("mkStringMap with non-enum type");
 
@@ -11,5 +17,5 @@ pub inline fn mkStringMap(comptime T: type) std.StaticStringMap(T) {
         out[i] = .{ field.name, @field(T, field.name) };
     }
 
-    return std.StaticStringMap(T).initComptime(out);
+    return StaticStringMap(T, fields.len).initComptime(out);
 }
