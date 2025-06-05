@@ -20,6 +20,7 @@ src: []const u8,
 
 lexer: *Lexer,
 parser: Parser,
+failed: bool = false,
 
 // INIT / DEINIT
 

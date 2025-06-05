@@ -182,57 +182,32 @@ inline fn isSymbol(char: u21) bool {
 
 // MESSAGES
 
-const Logger = @import("../log.zig").Logger(.lexer, Message);
+const log = @import("../log.zig");
 
-pub const Message = union(enum) {
+// zig fmt: off
+const message = log.simpleMessage(&.{
     // numbers
-    mismatched_bases: struct { u8, u8 },
-    unexpected_char_number,
+    .{ .fatal, .mismatched_bases,       "base {} digit in base {} number", struct { u8, u8 } },
+    .{ .fatal, .unexpected_char_number, "unexpected character in number",  void },
 
     // escape sequences
-    invalid_esc,
-    esc_no_end,
-    esc_too_large,
-    non_hex_in_hex_esc,
+    .{ .err,   .invalid_esc,        "invalid escape sequence",      void },
+    .{ .fatal, .esc_no_end,         "escape sequence has no end",   void },
+    .{ .err,   .esc_too_large,      "escape sequence is too large", void },
+    .{ .err,   .non_hex_in_hex_esc, "non-hex character in hex escape sequence", void },
 
     // characters
-    empty_char,
-    char_no_end,
-    char_too_large,
+    .{ .err,   .empty_char,     "character cannot be empty", void },
+    .{ .fatal, .char_no_end,    "character has no end",      void },
+    .{ .err,   .char_too_large, "character is too large",    void },
 
     // miscellaneous
-    misplaced_top_level_doc,
+    .{ .err, .misplaced_top_level_doc, "top-level doc comments must be at the start of the script", void },
+});
+// zig fmt: on
 
-    pub fn format(
-        self: *const Message,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
-        try switch (self.*) {
-            // numbers
-            .mismatched_bases => |b| writer.print("base {} digit in base {} number", b),
-            .unexpected_char_number => writer.writeAll("unexpected character in number"),
-
-            // escape sequences
-            .invalid_esc => writer.writeAll("invalid escape sequence"),
-            .esc_no_end => writer.writeAll("escape sequence has no end"),
-            .esc_too_large => writer.writeAll("escape sequence is too large"),
-            .non_hex_in_hex_esc => writer.writeAll("non-hex character in hex escape sequence"),
-
-            // characters
-            .empty_char => writer.writeAll("character cannot be empty"),
-            .char_no_end => writer.writeAll("character has no end"),
-            .char_too_large => writer.writeAll("character is too large"),
-
-            // miscellaneous
-            .misplaced_top_level_doc => writer.writeAll("top-level doc comments must be at the start of the script"),
-        };
-    }
-};
+pub const Message = message.type;
+const Logger = log.Logger(.lexer, Message, message.print, message.level);
 
 // STRUCTURE
 
@@ -253,7 +228,6 @@ basic: bool = true,
 fmt_string: bool = false,
 
 logger: Logger,
-failed: bool = false,
 
 const Self = @This();
 
@@ -292,7 +266,7 @@ pub inline fn getLastToken(self: *Self) ?LocatedToken {
 }
 
 pub inline fn finished(self: Self) bool {
-    return (self.pos.raw >= self.script.src.len or self.failed);
+    return (self.pos.raw >= self.script.src.len or self.script.failed);
 }
 
 // IMPLEMENTATION
@@ -373,11 +347,6 @@ fn advance(self: *Self) !void {
     self.pos.raw = self.buf[0].offset;
 }
 
-inline fn fatal(self: *Self, msg: Message, span: Span, hi: ?Pos) !void {
-    try self.logger.log(msg, span, hi);
-    self.failed = true;
-}
-
 inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     self.basic = false;
     defer self.basic = true;
@@ -408,16 +377,16 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     while (!end_reached) : (try self.advance()) {
         switch (self.buf[0].code) {
             '0'...'1', '_' => {},
-            '2'...'7' => if (base == 2) return self.fatal(.{ .mismatched_bases = .{ 8, 2 } }, span, self.pos),
-            '8'...'9' => if (base < 10) return self.fatal(.{ .mismatched_bases = .{ 10, base } }, span, self.pos),
-            'a'...'d', 'A'...'D', 'f', 'F' => if (base != 16) return self.fatal(.{ .mismatched_bases = .{ 16, base } }, span, self.pos),
+            '2'...'7' => if (base == 2) return self.logger.log(.{ .mismatched_bases = .{ 8, 2 } }, span, self.pos),
+            '8'...'9' => if (base < 10) return self.logger.log(.{ .mismatched_bases = .{ 10, base } }, span, self.pos),
+            'a'...'d', 'A'...'D', 'f', 'F' => if (base != 16) return self.logger.log(.{ .mismatched_bases = .{ 16, base } }, span, self.pos),
             'e', 'E' => if (base != 16) {
-                if (base != 10) return self.fatal(.{ .mismatched_bases = .{ 16, base } }, span, self.pos);
+                if (base != 10) return self.logger.log(.{ .mismatched_bases = .{ 16, base } }, span, self.pos);
                 if (out.float) {
                     if (!exponent_reached) {
                         exponent_reached = true;
-                    } else return self.fatal(.unexpected_char_number, span, self.pos);
-                } else return self.fatal(.{ .mismatched_bases = .{ 16, 10 } }, span, self.pos);
+                    } else return self.logger.log(.unexpected_char_number, span, self.pos);
+                } else return self.logger.log(.{ .mismatched_bases = .{ 16, 10 } }, span, self.pos);
             },
             '+', '-' => if (exponent_reached and !exp_sign_reached) {
                 exp_sign_reached = true;
@@ -429,7 +398,7 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
                 if (!isNumberChar(self.buf[1].?.code)) break;
                 out.float = true;
             },
-            else => return self.fatal(.unexpected_char_number, span, self.pos),
+            else => return self.logger.log(.unexpected_char_number, span, self.pos),
         }
 
         span[1] = self.pos;
@@ -506,7 +475,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
             if (isNewLine(self.buf[1].?.code)) {
                 const fail_pos = self.pos.next();
                 try self.advance();
-                try self.fatal(.esc_no_end, .{ esc_seq_start, fail_pos }, fail_pos);
+                try self.logger.log(.esc_no_end, .{ esc_seq_start, fail_pos }, fail_pos);
                 return error.UnexpectedEOL;
             }
 
@@ -526,7 +495,7 @@ pub fn next(self: *Self) !void {
     const last_token = self.getLastToken();
     const initial_len = self.output.items.len;
 
-    while (initial_len == self.output.items.len and !self.failed) : (try self.advance()) {
+    while (initial_len == self.output.items.len and !self.script.failed) : (try self.advance()) {
         if (self.word.len == 0) {
             var signed_number = (self.buf[0].code == '-' or self.buf[0].code == '+') and isNumberChar(self.buf[1].?.code);
             // if the last token was an expression, it's arithmetic. otherwise, it's a signed number.
@@ -580,7 +549,7 @@ pub fn next(self: *Self) !void {
                         break;
                     } else if (self.buf[0].code == '\\') {
                         try buffer.appendSlice(self.script.src[last..self.pos.raw]);
-                        const c = self.parseEscapeSequence(exit) catch if (self.failed) return else 0xFFFD;
+                        const c = self.parseEscapeSequence(exit) catch if (self.script.failed) return else 0xFFFD;
                         try unicode.writeCodepointToUtf8(c, buffer.writer());
                         last = self.buf[1].?.offset;
                     }
@@ -596,7 +565,7 @@ pub fn next(self: *Self) !void {
                 if (self.buf[0].code == '\'') {
                     try self.logger.log(.empty_char, .{ start, self.pos }, null);
                 } else if (self.buf[0].code == '\\') {
-                    char = self.parseEscapeSequence('\'') catch if (self.failed) return else 0xFFFD;
+                    char = self.parseEscapeSequence('\'') catch if (self.script.failed) return else 0xFFFD;
                     try self.advance();
                 } else if (self.buf[1].?.code == '\'') {
                     char = self.buf[0].code;
@@ -606,7 +575,7 @@ pub fn next(self: *Self) !void {
                 if (self.buf[0].code != '\'') {
                     while (self.buf[0].code != '\'') : (try self.advance())
                         if (isNewLine(self.buf[1].?.code))
-                            return self.fatal(.char_no_end, .{ start, start }, null);
+                            return self.logger.log(.char_no_end, .{ start, start }, null);
 
                     if (char != 0xFFFD) try self.logger.log(.char_too_large, .{ start, self.pos }, null);
                 }
