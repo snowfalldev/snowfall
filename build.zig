@@ -10,10 +10,10 @@ pub fn build(b: *std.Build) anyerror!void {
     const zg = b.dependency("zg", .{});
     const code_point_mod = zg.module("code_point");
 
-    const static_map = b.dependency("static-map", .{});
+    const static_map = b.dependency("static_map", .{});
     const static_map_mod = static_map.module("static-map");
 
-    const zig_gc = b.dependency("zig-gc", .{});
+    const zig_gc = b.dependency("zig_gc", .{});
     const zig_gc_mod = zig_gc.module("gc");
 
     // MODULE

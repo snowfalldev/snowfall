@@ -11,130 +11,127 @@ const Span = ast.Span;
 
 const unicode = @import("unicode.zig");
 
-pub fn Logger(comptime scope: @TypeOf(.EnumLiteral)) type {
+// LOGGER STRUCTURE
+
+fn MsgContainer(
+    comptime scope: @TypeOf(.EnumLiteral),
+    comptime Message: type,
+) type {
     return struct {
-        allocator: Allocator,
-        script: ?*Script,
-        errs: Messages,
-        warns: Messages,
-        infos: Messages,
-        debugs: Messages,
+        script: *Script,
+        msg: Message,
+        span: Span,
+        hi: ?Pos,
 
         const Self = @This();
 
-        const Messages = std.ArrayList(Message);
-        const Message = struct {
-            msg: []const u8,
-            info: []const u8,
-            data: []const u8,
+        pub fn format(
+            self: *const Self,
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = fmt;
+            _ = options;
 
-            pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
-                allocator.free(self.msg);
-                allocator.free(self.info);
-                allocator.free(self.data);
+            if (builtin.mode == .Debug) // print scope in debug mode
+                try writer.writeAll("[" ++ @tagName(scope) ++ "] ");
+
+            try self.msg.format("", .{}, writer); // print message
+
+            // print script name & position
+            try writer.print(" [{s} - {}:{}]\n", .{
+                self.script.name,
+                self.span[0].row + 1,
+                self.span[0].col + 1,
+            });
+
+            // find affected line bounds
+            const src = self.script.src;
+            var start = self.span[0].raw - self.span[0].col;
+            while (start > 0 and !unicode.isNewLine(src[start - 1])) start -= 1;
+            var end: usize = start;
+            while (end < src.len and !unicode.isNewLine(src[end])) end += 1;
+
+            // print affected line
+            try writer.writeAll(src[start..end]);
+            try writer.writeByte('\n');
+
+            // highlight affected section
+            try writer.writeByteNTimes(' ', self.span[0].col);
+            if (self.span[1].col >= self.span[0].col) {
+                var rem = self.span[1].col - self.span[0].col;
+
+                if (self.hi) |hi| {
+                    const offset = hi.col - self.span[0].col;
+                    try writer.writeByteNTimes('~', offset);
+                    rem -= offset;
+                }
+
+                try writer.writeByte('^');
+                try writer.writeByteNTimes('~', rem);
             }
-        };
+            try writer.writeByte('\n');
+        }
 
-        pub fn init(allocator: Allocator, script: ?*Script) Self {
+        pub inline fn level(self: Self) std.log.Level {
+            if (@hasDecl(Message, "level"))
+                return self.msg.level();
+            return .err;
+        }
+    };
+}
+
+pub fn Logger(
+    comptime scope: @TypeOf(.EnumLiteral),
+    comptime Message: type,
+) type {
+    if (!@hasDecl(Message, "format"))
+        @compileError("format not implemented for logger message");
+
+    return struct {
+        script: *Script,
+        allocator: Allocator,
+        errors: std.ArrayList(Container),
+        others: std.ArrayList(Container),
+
+        const Self = @This();
+
+        const Container = MsgContainer(scope, Message);
+
+        pub fn init(allocator: Allocator, script: *Script) Self {
             return .{
-                .allocator = allocator,
                 .script = script,
-                .errs = Messages.init(allocator),
-                .warns = Messages.init(allocator),
-                .infos = Messages.init(allocator),
-                .debugs = Messages.init(allocator),
+                .allocator = allocator,
+                .errors = std.ArrayList(Container).init(allocator),
+                .others = std.ArrayList(Container).init(allocator),
             };
         }
 
-        pub fn deinit(self: Self) void {
-            for (self.errs.items) |m| m.deinit(self.allocator);
-            for (self.warns.items) |m| m.deinit(self.allocator);
-            for (self.infos.items) |m| m.deinit(self.allocator);
-            for (self.debugs.items) |m| m.deinit(self.allocator);
-
-            self.errs.deinit();
-            self.warns.deinit();
-            self.infos.deinit();
-            self.debugs.deinit();
+        pub inline fn deinit(self: Self) void {
+            self.msgs.deinit();
         }
 
-        inline fn mkMsg(self: Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !Message {
-            return .{
-                .msg = try allocPrint(self.allocator, fmt, args),
-                .info = try self.infoString(span),
-                .data = try self.dataString(span, hi),
-            };
+        inline fn mkContainer(self: Self, msg: Message, span: Span, hi: ?Pos) Container {
+            return .{ .script = self.script, .msg = msg, .span = span, .hi = hi };
         }
 
-        pub inline fn err(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
-            @branchHint(.cold);
-            const msg = try self.mkMsg(fmt, args, span, hi);
-            try self.errs.append(msg);
-            std.log.err("{s} {s}\n{s}", msg);
-        }
+        pub fn log(self: *Self, msg: Message, span: Span, hi: ?Pos) !void {
+            const c = self.mkContainer(msg, span, hi);
+            const level = c.level();
 
-        pub inline fn warn(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
-            const msg = try self.mkMsg(fmt, args, span, hi);
-            try self.warns.append(msg);
-            std.log.warn("{s} {s}\n{s}", msg);
-        }
-
-        pub inline fn info(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
-            const msg = try self.mkMsg(fmt, args, span, hi);
-            try self.infos.append(msg);
-            std.log.info("{s} {s}\n{s}", msg);
-        }
-
-        pub inline fn debug(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
-            const msg = try self.mkMsg(fmt, args, span, hi);
-            try self.debugs.append(msg);
-            std.log.debug("{s} {s}\n{s}", msg);
-        }
-
-        fn infoString(self: Self, span: ?Span) ![]const u8 {
-            var out = std.ArrayList(u8).init(self.allocator);
-            errdefer out.deinit();
-            if (builtin.mode == .Debug) try out.appendSlice("[" ++ @tagName(scope));
-
-            if (self.script == null or (self.script != null and span == null)) {
-                if (builtin.mode == .Debug) try out.append(']');
-                return out.toOwnedSlice();
+            if (level == .err) {
+                try self.errors.append(c);
+            } else {
+                try self.others.append(c);
             }
 
-            try if (builtin.mode != .Debug) out.append('[') else out.appendSlice(" | ");
-
-            const writer = out.writer();
-            try writer.print("{s}", .{self.script.?.name});
-            try if (span) |s| writer.print(" - {}:{}]", .{ s[0].row + 1, s[0].col + 1 }) else out.append(']');
-            return out.toOwnedSlice();
-        }
-
-        fn dataString(self: Self, span: ?Span, hi: ?Pos) ![]const u8 {
-            if (self.script == null or span == null) return self.allocator.alloc(u8, 0);
-            const s = span.?;
-            const d = self.script.?.src;
-
-            var line_start_pos = s[0].raw - s[0].col;
-            while (line_start_pos > 0 and !unicode.isNewLine(d[line_start_pos - 1])) line_start_pos -= 1;
-            var line_end_pos: usize = line_start_pos;
-            while (line_end_pos < d.len and !unicode.isNewLine(d[line_end_pos])) line_end_pos += 1;
-
-            var out = std.ArrayList(u8).init(self.allocator);
-            errdefer out.deinit();
-            try out.appendSlice(d[line_start_pos..line_end_pos]);
-            try out.append('\n');
-
-            try out.appendNTimes(' ', s[0].col);
-            var i: usize = s[0].col;
-            if (s[1].col >= s[0].col) {
-                if (hi) |h| while (i < h.col) : (i += 1) try out.append('~');
-                try out.append('^');
-                i += 1;
-                while (i < s[1].col + 1) : (i += 1) try out.append('~');
+            switch (c.level()) {
+                .err => std.log.err("{}", .{c}),
+                .warn => std.log.warn("{}", .{c}),
+                .info => std.log.info("{}", .{c}),
+                .debug => std.log.debug("{}", .{c}),
             }
-            try out.append('\n');
-
-            return out.toOwnedSlice();
         }
     };
 }

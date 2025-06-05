@@ -1,21 +1,20 @@
 const StaticStringMap = @import("static-map").StaticStringMap;
 
-fn MkStringMapRetT(comptime T: type) type {
+fn EnumStringMapT(comptime T: type) type {
     const type_info = @typeInfo(T);
-    if (type_info != .@"enum") @compileError("mkStringMap with non-enum type");
+    if (type_info != .@"enum") @compileError("enumStringMap with non-enum type");
     return StaticStringMap(T, type_info.@"enum".fields.len);
 }
 
-pub inline fn mkStringMap(comptime T: type) MkStringMapRetT(T) {
-    const type_info = @typeInfo(T);
-    if (type_info != .@"enum") @compileError("mkStringMap with non-enum type");
+pub inline fn enumStringMap(comptime T: type) EnumStringMapT(T) {
+    const MapT = EnumStringMapT(T);
 
-    const fields = type_info.@"enum".fields;
+    const fields = @typeInfo(T).@"enum".fields;
     comptime var out: [fields.len]struct { []const u8, T } = undefined;
 
     inline for (fields, 0..) |field, i| {
         out[i] = .{ field.name, @field(T, field.name) };
     }
 
-    return StaticStringMap(T, fields.len).initComptime(out);
+    return MapT.initComptime(out, .{ .eval_branch_quota = fields.len * 50 });
 }

@@ -73,7 +73,7 @@ pub const BuiltinType = enum(u8) {
     //maybe = 0xFE,
     //any = 0xFF,
 
-    pub const string_map = util.mkStringMap(BuiltinType);
+    pub const string_map = util.enumStringMap(BuiltinType);
 };
 
 // zig fmt: on

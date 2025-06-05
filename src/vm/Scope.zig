@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 
 const Script = @import("../Script.zig");
 
-const val = @import("value.zig");
+const Value = @import("values.zig").Value;
 
 const Self = @This();
 
@@ -21,7 +21,7 @@ lock: std.Thread.RwLock = .{},
 
 pub const Variable = struct {
     mutable: bool = false,
-    value: val.Value,
+    value: Value,
     // per-variable lock
     lock: std.Thread.RwLock = .{},
 };

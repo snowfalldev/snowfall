@@ -1,8 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const value = @import("../value.zig");
-const Value = value.Value;
+const Value = @import("../value.zig").Value;
 
 inner: []const u8,
 

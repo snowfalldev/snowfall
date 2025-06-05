@@ -2,23 +2,23 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
-const @"type" = @import("type.zig");
-const Types = @"type".Type;
-const Type = @"type".Type;
+const types = @import("types.zig");
+const Types = types.Type;
+const Type = types.Type;
 
-const BuiltinType = @"type".BuiltinType;
+const BuiltinType = types.BuiltinType;
 
-const StructuredTypes = @"type".StructuredTypes;
-const StructuredType = @"type".StructuredType;
-const StructType = @"type".StructType;
-const EnumType = @"type".EnumType;
-const UnionType = @"type".UnionType;
+const StructuredTypes = types.StructuredTypes;
+const StructuredType = types.StructuredType;
+const StructType = types.StructType;
+const EnumType = types.EnumType;
+const UnionType = types.UnionType;
 
-const CollectionTypes = @"type".CollectionTypes;
-const CollectionType = @"type".CollectionType;
-const ListType = @"type".ListType;
-const SetType = @"type".SetType;
-const MapType = @"type".MapType;
+const CollectionTypes = types.CollectionTypes;
+const CollectionType = types.CollectionType;
+const ListType = types.ListType;
+const SetType = types.SetType;
+const MapType = types.MapType;
 
 const Scope = @import("Scope.zig");
 const ast = @import("../ast.zig");

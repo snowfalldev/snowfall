@@ -10,9 +10,7 @@ const code_point = @import("code_point");
 const CodePoint = code_point.CodePoint;
 
 const Script = @import("../Script.zig");
-const Logger = @import("../log.zig").Logger;
-const NumberType = @import("../vm/value/number.zig").NumberType;
-const BuiltinType = @import("../vm/type.zig").BuiltinType;
+const BuiltinType = @import("../vm/types.zig").BuiltinType;
 
 const util = @import("../util.zig");
 
@@ -95,7 +93,7 @@ pub const Token = union(enum) {
         import, // import a script
         from, // cherry-pick imports
 
-        pub const string_map = util.mkStringMap(Keyword);
+        pub const string_map = util.enumStringMap(Keyword);
     };
     // zig fmt: on
 
@@ -182,6 +180,60 @@ inline fn isSymbol(char: u21) bool {
     };
 }
 
+// MESSAGES
+
+const Logger = @import("../log.zig").Logger(.lexer, Message);
+
+pub const Message = union(enum) {
+    // numbers
+    mismatched_bases: struct { u8, u8 },
+    unexpected_char_number,
+
+    // escape sequences
+    invalid_esc,
+    esc_no_end,
+    esc_too_large,
+    non_hex_in_hex_esc,
+
+    // characters
+    empty_char,
+    char_no_end,
+    char_too_large,
+
+    // miscellaneous
+    misplaced_top_level_doc,
+
+    pub fn format(
+        self: *const Message,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        try switch (self.*) {
+            // numbers
+            .mismatched_bases => |b| writer.print("base {} digit in base {} number", b),
+            .unexpected_char_number => writer.writeAll("unexpected character in number"),
+
+            // escape sequences
+            .invalid_esc => writer.writeAll("invalid escape sequence"),
+            .esc_no_end => writer.writeAll("escape sequence has no end"),
+            .esc_too_large => writer.writeAll("escape sequence is too large"),
+            .non_hex_in_hex_esc => writer.writeAll("non-hex character in hex escape sequence"),
+
+            // characters
+            .empty_char => writer.writeAll("character cannot be empty"),
+            .char_no_end => writer.writeAll("character has no end"),
+            .char_too_large => writer.writeAll("character is too large"),
+
+            // miscellaneous
+            .misplaced_top_level_doc => writer.writeAll("top-level doc comments must be at the start of the script"),
+        };
+    }
+};
+
 // STRUCTURE
 
 script: *Script,
@@ -200,7 +252,7 @@ word: []const u8 = "",
 basic: bool = true,
 fmt_string: bool = false,
 
-logger: Logger(.lexer),
+logger: Logger,
 failed: bool = false,
 
 const Self = @This();
@@ -223,7 +275,7 @@ pub fn init(script: *Script) !*Self {
     lexer.buf[1] = lexer.iter.next();
 
     lexer.allocator = lexer.arena.allocator();
-    lexer.logger = Logger(.lexer).init(lexer.allocator, script);
+    lexer.logger = Logger.init(lexer.allocator, script);
 
     return lexer;
 }
@@ -321,8 +373,8 @@ fn advance(self: *Self) !void {
     self.pos.raw = self.buf[0].offset;
 }
 
-inline fn fatal(self: *Self, comptime fmt: []const u8, args: anytype, span: ?Span, hi: ?Pos) !void {
-    try self.logger.err(fmt, args, span, hi);
+inline fn fatal(self: *Self, msg: Message, span: Span, hi: ?Pos) !void {
+    try self.logger.log(msg, span, hi);
     self.failed = true;
 }
 
@@ -356,16 +408,16 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     while (!end_reached) : (try self.advance()) {
         switch (self.buf[0].code) {
             '0'...'1', '_' => {},
-            '2'...'7' => if (base == 2) return self.fatal("octal digit in base 2 number", .{}, span, self.pos),
-            '8'...'9' => if (base < 10) return self.fatal("decimal digit in base {} number", .{base}, span, self.pos),
-            'a'...'d', 'A'...'D', 'f', 'F' => if (base != 16) return self.fatal("hex digit in base {} number", .{base}, span, self.pos),
+            '2'...'7' => if (base == 2) return self.fatal(.{ .mismatched_bases = .{ 8, 2 } }, span, self.pos),
+            '8'...'9' => if (base < 10) return self.fatal(.{ .mismatched_bases = .{ 10, base } }, span, self.pos),
+            'a'...'d', 'A'...'D', 'f', 'F' => if (base != 16) return self.fatal(.{ .mismatched_bases = .{ 16, base } }, span, self.pos),
             'e', 'E' => if (base != 16) {
-                if (base != 10) return self.fatal("hex digit in base {} number", .{base}, span, self.pos);
+                if (base != 10) return self.fatal(.{ .mismatched_bases = .{ 16, base } }, span, self.pos);
                 if (out.float) {
                     if (!exponent_reached) {
                         exponent_reached = true;
-                    } else return self.fatal("hex digit in float exponent", .{}, span, self.pos);
-                } else return self.fatal("hex digit in base 10 number", .{}, span, self.pos);
+                    } else return self.fatal(.unexpected_char_number, span, self.pos);
+                } else return self.fatal(.{ .mismatched_bases = .{ 16, 10 } }, span, self.pos);
             },
             '+', '-' => if (exponent_reached and !exp_sign_reached) {
                 exp_sign_reached = true;
@@ -377,7 +429,7 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
                 if (!isNumberChar(self.buf[1].?.code)) break;
                 out.float = true;
             },
-            else => return self.fatal("unexpected character in number", .{}, span, self.pos),
+            else => return self.fatal(.unexpected_char_number, span, self.pos),
         }
 
         span[1] = self.pos;
@@ -417,7 +469,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
             inline for (0..2) |i| {
                 chars[i] = @truncate(self.buf[0].code);
                 if (!(isHexadecimalChar(chars[i]) or chars[i] == '_')) {
-                    try self.logger.err("non-hex char in hex escape sequence", .{}, span, self.pos);
+                    try self.logger.log(.non_hex_in_hex_esc, span, self.pos);
                     return error.InvalidCharacter;
                 } else if (i == 0) try self.advance();
             }
@@ -440,13 +492,13 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
 
                     if (idx == 0) {
                         while (self.buf[0].code != '}') try self.advance();
-                        try self.logger.err("escape sequence is too large", .{}, .{ esc_seq_start, self.pos }, null);
+                        try self.logger.log(.esc_too_large, .{ esc_seq_start, self.pos }, null);
                         return error.Overflow;
                     } else idx -|= 1;
                 }
 
                 return parseUnsigned(u21, self.script.src[esc_char_start.raw..self.pos.raw], 16) catch {
-                    try self.logger.err("escape sequence is too large", .{}, .{ esc_seq_start, self.pos }, null); // InvalidCharacter is unreachable.
+                    try self.logger.log(.esc_too_large, .{ esc_seq_start, self.pos }, null); // InvalidCharacter is unreachable.
                     return error.Overflow;
                 };
             }
@@ -454,17 +506,17 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
             if (isNewLine(self.buf[1].?.code)) {
                 const fail_pos = self.pos.next();
                 try self.advance();
-                try self.fatal("escape sequence has no end", .{}, .{ esc_seq_start, fail_pos }, fail_pos);
+                try self.fatal(.esc_no_end, .{ esc_seq_start, fail_pos }, fail_pos);
                 return error.UnexpectedEOL;
             }
 
-            try self.logger.err("non-hex char in hex escape sequence", .{}, .{ esc_char_start, self.pos }, self.pos);
+            try self.logger.log(.non_hex_in_hex_esc, .{ esc_char_start, self.pos }, self.pos);
             return error.InvalidCharacter;
         },
         else => |char| if (char == exit) return char,
     }
 
-    try self.logger.err("invalid escape sequence", .{}, .{ esc_seq_start, self.pos }, self.pos);
+    try self.logger.log(.invalid_esc, .{ esc_seq_start, self.pos }, self.pos);
     return error.InvalidCharacter;
 }
 
@@ -542,7 +594,7 @@ pub fn next(self: *Self) !void {
 
                 try self.advance();
                 if (self.buf[0].code == '\'') {
-                    try self.logger.err("empty characters not allowed", .{}, .{ start, self.pos }, null);
+                    try self.logger.log(.empty_char, .{ start, self.pos }, null);
                 } else if (self.buf[0].code == '\\') {
                     char = self.parseEscapeSequence('\'') catch if (self.failed) return else 0xFFFD;
                     try self.advance();
@@ -554,9 +606,9 @@ pub fn next(self: *Self) !void {
                 if (self.buf[0].code != '\'') {
                     while (self.buf[0].code != '\'') : (try self.advance())
                         if (isNewLine(self.buf[1].?.code))
-                            return self.fatal("character has no end", .{}, .{ start, start }, null);
+                            return self.fatal(.char_no_end, .{ start, start }, null);
 
-                    if (char != 0xFFFD) try self.logger.err("character is too large", .{}, .{ start, self.pos }, null);
+                    if (char != 0xFFFD) try self.logger.log(.char_too_large, .{ start, self.pos }, null);
                 }
 
                 try self.addToken(.{ start, self.pos }, .{ .char = char });
@@ -596,7 +648,7 @@ pub fn next(self: *Self) !void {
                 }
 
                 if (out.top_level and span[0].raw != 0)
-                    try self.logger.err("top-level doc comment must be at the start of the file", .{}, span, null);
+                    try self.logger.log(.misplaced_top_level_doc, span, null);
 
                 out.text = self.script.src[start.raw .. span[1].raw + 1];
                 if (doc) try self.addToken(span, .{ .doc_comment = out });
