@@ -6,12 +6,12 @@ const std = @import("std");
 
 const runerip = @import("runerip");
 
-pub const CodePoint = struct {
+pub const Rune = struct {
     code: u21,
     offset: usize,
     len: usize,
 
-    pub inline fn decodeCursor(slice: []const u8, cursor: *usize) ?CodePoint {
+    pub inline fn decodeCursor(slice: []const u8, cursor: *usize) ?Rune {
         const offset = cursor.*;
         const code = runerip.decodeRuneCursor(slice, cursor) catch return null;
         return .{ .code = code, .offset = offset, .len = cursor.* - offset };
@@ -21,30 +21,30 @@ pub const CodePoint = struct {
 // I/O TOOLS
 
 // based on std.unicode.{utf8CodepointSequenceLength, utf8Encode}
-pub fn writeCodePointToUtf8(code: u21, writer: anytype) !void {
-    if (code < 0x80) {
-        try writer.writeByte(@as(u8, @intCast(code)));
-    } else if (code < 0x800) {
-        try writer.writeByte(@as(u8, @intCast(0b11000000 | (code >> 6))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (code & 0b111111))));
-    } else if (code < 0x10000) {
-        if (0xd800 <= code and code <= 0xdfff) return error.CannotEncodeSurrogateHalf;
-        try writer.writeByte(@as(u8, @intCast(0b11100000 | (code >> 12))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((code >> 6) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (code & 0b111111))));
-    } else if (code < 0x110000) {
-        try writer.writeByte(@as(u8, @intCast(0b11110000 | (code >> 18))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((code >> 12) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((code >> 6) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (code & 0b111111))));
+pub fn writeCharUtf8(char: u21, writer: anytype) !void {
+    if (char < 0x80) {
+        try writer.writeByte(@as(u8, @intCast(char)));
+    } else if (char < 0x800) {
+        try writer.writeByte(@as(u8, @intCast(0b11000000 | (char >> 6))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (char & 0b111111))));
+    } else if (char < 0x10000) {
+        if (0xd800 <= char and char <= 0xdfff) return error.CannotEncodeSurrogateHalf;
+        try writer.writeByte(@as(u8, @intCast(0b11100000 | (char >> 12))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((char >> 6) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (char & 0b111111))));
+    } else if (char < 0x110000) {
+        try writer.writeByte(@as(u8, @intCast(0b11110000 | (char >> 18))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((char >> 12) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((char >> 6) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (char & 0b111111))));
     } else {
-        return error.codeTooLarge;
+        return error.CharTooLarge;
     }
 }
 
 pub inline fn debugChar(char: u21) !void {
     var stderr = std.io.getStdErr();
-    try writeCodePointToUtf8(char, stderr.writer());
+    try writeCharUtf8(char, stderr.writer());
 }
 
 // CHARACTER CATEGORIZATION

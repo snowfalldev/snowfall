@@ -12,7 +12,7 @@ const BuiltinType = @import("../vm/types.zig").BuiltinType;
 const util = @import("../util.zig");
 
 const unicode = @import("../unicode.zig");
-const CodePoint = unicode.CodePoint;
+const Rune = unicode.Rune;
 const isGap = unicode.isGap;
 const isNewLine = unicode.isNewLine;
 const isNumberChar = unicode.isNumber;
@@ -108,7 +108,7 @@ pub const Token = union(enum) {
             .bool => |v| try writer.print("bool: {}", .{v}),
             .char => |v| {
                 try writer.writeAll("char: '");
-                try unicode.writeCodePointToUtf8(v, writer);
+                try unicode.writeCharUtf8(v, writer);
                 try writer.writeByte('\'');
             },
             .number => |v| try writer.print("number: {s}", .{v.buf}),
@@ -220,7 +220,7 @@ last: Pos = .{},
 start: Pos = .{},
 
 cursor: usize = 0,
-buf: struct { CodePoint, ?CodePoint } = .{ undefined, null },
+buf: struct { Rune, ?Rune } = .{ undefined, null },
 word: []const u8 = "",
 basic: bool = true,
 fmt_string: bool = false,
@@ -242,8 +242,8 @@ pub fn init(script: *Script) !*Self {
         .logger = undefined,
     };
 
-    if (CodePoint.decodeCursor(script.src, &lexer.cursor)) |char| lexer.buf[0] = char;
-    lexer.buf[1] = CodePoint.decodeCursor(script.src, &lexer.cursor);
+    if (Rune.decodeCursor(script.src, &lexer.cursor)) |rune| lexer.buf[0] = rune;
+    lexer.buf[1] = Rune.decodeCursor(script.src, &lexer.cursor);
 
     lexer.allocator = lexer.arena.allocator();
     lexer.logger = Logger.init(lexer.allocator, script);
@@ -297,7 +297,7 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
 }
 
 inline fn advanceRead(self: *Self) !void {
-    defer self.buf[1] = CodePoint.decodeCursor(self.script.src, &self.cursor);
+    defer self.buf[1] = Rune.decodeCursor(self.script.src, &self.cursor);
     self.buf[0] = self.buf[1] orelse {
         // no next char, we're done
         self.pos.raw = self.script.src.len;
@@ -555,7 +555,7 @@ pub fn next(self: *Self) !void {
                     } else if (self.buf[0].code == '\\') {
                         try buffer.appendSlice(self.script.src[last..self.pos.raw]);
                         const c = self.parseEscapeSequence(exit) catch if (self.script.failed) return else 0xFFFD;
-                        try unicode.writeCodePointToUtf8(c, buffer.writer());
+                        try unicode.writeCharUtf8(c, buffer.writer());
                         last = self.buf[1].?.offset;
                     }
                 }
