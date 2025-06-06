@@ -2,63 +2,49 @@
 
 const std = @import("std");
 
+// CODEPOINTS
+
+const runerip = @import("runerip");
+
+pub const CodePoint = struct {
+    code: u21,
+    offset: usize,
+    len: usize,
+
+    pub inline fn decodeCursor(slice: []const u8, cursor: *usize) ?CodePoint {
+        const offset = cursor.*;
+        const code = runerip.decodeRuneCursor(slice, cursor) catch return null;
+        return .{ .code = code, .offset = offset, .len = cursor.* - offset };
+    }
+};
+
 // I/O TOOLS
 
-// based on std.unicode.{utf8ByteSequenceLength, utf8Decode}
-pub fn codepointFromUtf8(in: []const u8) !struct { u21, usize } {
-    var codepoint: u21 = 0;
-    var length: usize = 1;
-
-    switch (in[0]) {
-        0b0000_0000...0b0111_1111 => {
-            codepoint = @as(u21, in[0]);
-        },
-        0b1100_0000...0b1101_1111 => {
-            if (in.len < 2) return error.InvalidCodepoint;
-            codepoint = try std.unicode.utf8Decode2(in[0..2].*);
-            length = 2;
-        },
-        0b1110_0000...0b1110_1111 => {
-            if (in.len < 3) return error.InvalidCodepoint;
-            codepoint = try std.unicode.utf8Decode3(in[0..3].*);
-            length = 3;
-        },
-        0b1111_0000...0b1111_0111 => {
-            if (in.len < 4) return error.InvalidCodepoint;
-            codepoint = try std.unicode.utf8Decode4(in[0..4].*);
-            length = 4;
-        },
-        else => return error.InvalidStartByte,
-    }
-
-    return .{ codepoint, length };
-}
-
 // based on std.unicode.{utf8CodepointSequenceLength, utf8Encode}
-pub fn writeCodepointToUtf8(codepoint: u21, writer: anytype) !void {
-    if (codepoint < 0x80) {
-        try writer.writeByte(@as(u8, @intCast(codepoint)));
-    } else if (codepoint < 0x800) {
-        try writer.writeByte(@as(u8, @intCast(0b11000000 | (codepoint >> 6))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (codepoint & 0b111111))));
-    } else if (codepoint < 0x10000) {
-        if (0xd800 <= codepoint and codepoint <= 0xdfff) return error.CannotEncodeSurrogateHalf;
-        try writer.writeByte(@as(u8, @intCast(0b11100000 | (codepoint >> 12))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((codepoint >> 6) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (codepoint & 0b111111))));
-    } else if (codepoint < 0x110000) {
-        try writer.writeByte(@as(u8, @intCast(0b11110000 | (codepoint >> 18))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((codepoint >> 12) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((codepoint >> 6) & 0b111111))));
-        try writer.writeByte(@as(u8, @intCast(0b10000000 | (codepoint & 0b111111))));
+pub fn writeCodePointToUtf8(code: u21, writer: anytype) !void {
+    if (code < 0x80) {
+        try writer.writeByte(@as(u8, @intCast(code)));
+    } else if (code < 0x800) {
+        try writer.writeByte(@as(u8, @intCast(0b11000000 | (code >> 6))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (code & 0b111111))));
+    } else if (code < 0x10000) {
+        if (0xd800 <= code and code <= 0xdfff) return error.CannotEncodeSurrogateHalf;
+        try writer.writeByte(@as(u8, @intCast(0b11100000 | (code >> 12))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((code >> 6) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (code & 0b111111))));
+    } else if (code < 0x110000) {
+        try writer.writeByte(@as(u8, @intCast(0b11110000 | (code >> 18))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((code >> 12) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | ((code >> 6) & 0b111111))));
+        try writer.writeByte(@as(u8, @intCast(0b10000000 | (code & 0b111111))));
     } else {
-        return error.CodepointTooLarge;
+        return error.codeTooLarge;
     }
 }
 
 pub inline fn debugChar(char: u21) !void {
     var stderr = std.io.getStdErr();
-    try writeCodepointToUtf8(char, stderr.writer());
+    try writeCodePointToUtf8(char, stderr.writer());
 }
 
 // CHARACTER CATEGORIZATION

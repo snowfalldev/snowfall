@@ -6,14 +6,13 @@ const parseUnsigned = std.fmt.parseUnsigned;
 const parseInt = std.fmt.parseInt;
 const parseFloat = std.fmt.parseFloat;
 
-const runerip = @import("runerip");
-
 const Script = @import("../Script.zig");
 const BuiltinType = @import("../vm/types.zig").BuiltinType;
 
 const util = @import("../util.zig");
 
 const unicode = @import("../unicode.zig");
+const CodePoint = unicode.CodePoint;
 const isGap = unicode.isGap;
 const isNewLine = unicode.isNewLine;
 const isNumberChar = unicode.isNumber;
@@ -109,7 +108,7 @@ pub const Token = union(enum) {
             .bool => |v| try writer.print("bool: {}", .{v}),
             .char => |v| {
                 try writer.writeAll("char: '");
-                try unicode.writeCodepointToUtf8(v, writer);
+                try unicode.writeCodePointToUtf8(v, writer);
                 try writer.writeByte('\'');
             },
             .number => |v| try writer.print("number: {s}", .{v.buf}),
@@ -208,8 +207,6 @@ const message = log.simpleMessage(&.{
 pub const Message = message[0];
 const Logger = log.Logger(.lexer, Message, message[1]);
 
-pub const CodePoint = struct { code: u21, offset: usize, len: usize };
-
 // STRUCTURE
 
 script: *Script,
@@ -245,8 +242,8 @@ pub fn init(script: *Script) !*Self {
         .logger = undefined,
     };
 
-    if (lexer.nextCodePoint()) |char| lexer.buf[0] = char;
-    lexer.buf[1] = lexer.nextCodePoint();
+    if (CodePoint.decodeCursor(script.src, &lexer.cursor)) |char| lexer.buf[0] = char;
+    lexer.buf[1] = CodePoint.decodeCursor(script.src, &lexer.cursor);
 
     lexer.allocator = lexer.arena.allocator();
     lexer.logger = Logger.init(lexer.allocator, script);
@@ -299,14 +296,8 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
     if (symbol) try self.addToken(.{ self.pos, self.pos }, .{ .symbol = @truncate(self.buf[0].code) });
 }
 
-inline fn nextCodePoint(self: *Self) ?CodePoint {
-    const offset = self.cursor;
-    const code = runerip.decodeRuneCursor(self.script.src, &self.cursor) catch return null;
-    return .{ .code = code, .offset = offset, .len = self.cursor - offset };
-}
-
 inline fn advanceRead(self: *Self) !void {
-    defer self.buf[1] = self.nextCodePoint();
+    defer self.buf[1] = CodePoint.decodeCursor(self.script.src, &self.cursor);
     self.buf[0] = self.buf[1] orelse {
         // no next char, we're done
         self.pos.raw = self.script.src.len;
@@ -564,7 +555,7 @@ pub fn next(self: *Self) !void {
                     } else if (self.buf[0].code == '\\') {
                         try buffer.appendSlice(self.script.src[last..self.pos.raw]);
                         const c = self.parseEscapeSequence(exit) catch if (self.script.failed) return else 0xFFFD;
-                        try unicode.writeCodepointToUtf8(c, buffer.writer());
+                        try unicode.writeCodePointToUtf8(c, buffer.writer());
                         last = self.buf[1].?.offset;
                     }
                 }
