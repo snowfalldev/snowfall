@@ -7,8 +7,8 @@ pub fn build(b: *std.Build) anyerror!void {
 
     // DEPENDENCIES
 
-    const zg = b.dependency("zg", .{});
-    const code_point_mod = zg.module("code_point");
+    const runerip = b.dependency("runerip", .{});
+    const runerip_mod = runerip.module("runerip");
 
     const static_map = b.dependency("static_map", .{});
     const static_map_mod = static_map.module("static-map");
@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) anyerror!void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "code_point", .module = code_point_mod },
+            .{ .name = "runerip", .module = runerip_mod },
             .{ .name = "static-map", .module = static_map_mod },
             .{ .name = "gc", .module = zig_gc_mod },
         },

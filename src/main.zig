@@ -14,7 +14,7 @@ pub fn main() !void {
 
     var engine = Engine.init(allocator);
     var module = try engine.registerScript("main", data);
-    const tokens = try module.finishLexer();
+    const tokens = try module.tokenize();
 
     defer engine.deinit();
 
@@ -24,6 +24,6 @@ pub fn main() !void {
         const string = try token.token.toDebugString(allocator);
         defer allocator.free(string);
         const offset = @min(25 -| string.len, 25);
-        std.debug.print(" - {s} {s}[{}..{}]\n", .{ string, padding[0..offset], token.span[0], token.span[1] });
+        std.debug.print(" - {s} {s}({}..{})\n", .{ string, padding[0..offset], token.span[0], token.span[1] });
     }
 }

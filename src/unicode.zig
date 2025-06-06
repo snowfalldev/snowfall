@@ -1,4 +1,4 @@
-// A few things from zig-utftools and some codepoint categorization.
+//! A few things from zig-utftools and some codepoint categorization.
 
 const std = @import("std");
 

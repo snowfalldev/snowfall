@@ -28,11 +28,17 @@ fn get_config() void {
 
 // LOGGER STRUCTURE
 
+pub fn ToolsT(comptime Message: type) type {
+    return struct {
+        print: fn (*const Message, anytype) anyerror!void,
+        level: ?fn (*const Message) Level,
+    };
+}
+
 fn MsgContainer(
     comptime scope: @Type(.enum_literal),
     comptime Message: type,
-    comptime print_fn: fn (*const Message, anytype) anyerror!void,
-    comptime level_fn: ?fn (*const Message) Level,
+    comptime tools: ToolsT(Message),
 ) type {
     return struct {
         script: *Script,
@@ -64,13 +70,13 @@ fn MsgContainer(
                 try config.setColor(writer, .bold);
             }
 
-            try print_fn(&self.msg, writer); // print message
+            try tools.print(&self.msg, writer); // print message
 
             if (builtin.mode == .Debug) // print scope in debug mode
                 try writer.writeAll("[" ++ @tagName(scope) ++ "] ");
 
             // print script name & position
-            try writer.print(" [{s} - {}:{}]\n", .{
+            try writer.print(" ({s} - {}:{})\n", .{
                 self.script.name,
                 self.span[0].row + 1,
                 self.span[0].col + 1,
@@ -114,7 +120,7 @@ fn MsgContainer(
         }
 
         pub inline fn level(self: Self) Level {
-            return if (level_fn) |l| l(&self.msg) else Level.err;
+            return if (tools.level) |lvl| lvl(&self.msg) else Level.err;
         }
     };
 }
@@ -122,8 +128,7 @@ fn MsgContainer(
 pub fn Logger(
     comptime scope: @Type(.enum_literal),
     comptime Message: type,
-    comptime print_fn: fn (*const Message, anytype) anyerror!void,
-    comptime level_fn: ?fn (*const Message) Level,
+    comptime tools: ToolsT(Message),
 ) type {
     return struct {
         script: *Script,
@@ -133,7 +138,7 @@ pub fn Logger(
 
         const Self = @This();
 
-        const Container = MsgContainer(scope, Message, print_fn, level_fn);
+        const Container = MsgContainer(scope, Message, tools);
 
         pub fn init(allocator: Allocator, script: *Script) Self {
             get_config_once.call();
@@ -150,12 +155,8 @@ pub fn Logger(
             self.msgs.deinit();
         }
 
-        inline fn mkContainer(self: Self, msg: Message, span: Span, hi: ?Pos) Container {
-            return .{ .script = self.script, .msg = msg, .span = span, .hi = hi };
-        }
-
         pub fn log(self: *Self, msg: Message, span: Span, hi: ?Pos) !void {
-            const c = self.mkContainer(msg, span, hi);
+            const c = Container{ .script = self.script, .msg = msg, .span = span, .hi = hi };
             const level = c.level();
 
             if (level == .fatal) self.script.failed = true;
@@ -165,7 +166,7 @@ pub fn Logger(
                 else => try self.others.append(c),
             }
 
-            const color: Color, const name: []const u8 = switch (level) {
+            const color: Color, const name = switch (level) {
                 .fatal => .{ .red, "fatal" },
                 .err => .{ .red, "error" },
                 .warn => .{ .yellow, "warning" },
@@ -200,50 +201,42 @@ fn SimpleMessageT(comptime messages: []const SimpleMessageInfo) type {
     // make enum type
 
     comptime var enum_fields: [messages.len]Type.EnumField = undefined;
-    inline for (messages, 0..) |msg, i| {
+    inline for (messages, 0..) |msg, i|
         enum_fields[i] = .{
             .name = @tagName(msg.@"1"),
             .value = i,
         };
-    }
 
-    const enum_info = Type{ .@"enum" = .{
+    const enum_info = Type.Enum{
         .tag_type = u16,
         .fields = &enum_fields,
         .decls = &.{},
         .is_exhaustive = true,
-    } };
-    const EnumT = @Type(enum_info);
+    };
+    const EnumT = @Type(.{ .@"enum" = enum_info });
 
     // make union type
 
     comptime var union_fields: [messages.len]Type.UnionField = undefined;
-    inline for (messages, 0..) |msg, i| {
+    inline for (messages, 0..) |msg, i|
         union_fields[i] = .{
             .name = @tagName(msg.@"1"),
             .type = msg.@"3",
             .alignment = 0,
         };
-    }
 
-    const union_info = Type{ .@"union" = .{
+    const union_info = Type.Union{
         .layout = .auto,
         .tag_type = EnumT,
         .fields = &union_fields,
         .decls = &.{},
-    } };
-    return @Type(union_info);
+    };
+    return @Type(.{ .@"union" = union_info });
 }
 
 pub fn simpleMessage(comptime messages: []const SimpleMessageInfo) blk: {
     const Message = SimpleMessageT(messages);
-    const PrintFn = fn (*const Message, anytype) anyerror!void;
-    const LevelFn = fn (*const Message) Level;
-    break :blk struct {
-        type: type,
-        print: PrintFn,
-        level: LevelFn,
-    };
+    break :blk struct { type, ToolsT(Message) };
 } {
     const Message = SimpleMessageT(messages);
 
@@ -252,10 +245,10 @@ pub fn simpleMessage(comptime messages: []const SimpleMessageInfo) blk: {
             inline for (messages) |msg| {
                 if (self.* == msg.@"1") {
                     const data = @field(self.*, @tagName(msg.@"1"));
-                    switch (@TypeOf(data)) {
-                        void => try writer.writeAll(msg.@"2"),
-                        else => try writer.print(msg.@"2", data),
-                    }
+                    return switch (msg.@"3") {
+                        void => writer.writeAll(msg.@"2"),
+                        else => writer.print(msg.@"2", data),
+                    };
                 }
             }
         }
@@ -267,9 +260,5 @@ pub fn simpleMessage(comptime messages: []const SimpleMessageInfo) blk: {
         }
     };
 
-    return .{
-        .type = Message,
-        .print = Functions.print,
-        .level = Functions.level,
-    };
+    return .{ Message, .{ .print = Functions.print, .level = Functions.level } };
 }

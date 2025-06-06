@@ -18,9 +18,13 @@ engine: *Engine,
 name: []const u8,
 src: []const u8,
 
-lexer: *Lexer,
-parser: Parser,
+stage: Stage = undefined,
 failed: bool = false,
+
+const Stage = union(enum) {
+    lexer: *Lexer,
+    parser: *Parser,
+};
 
 // INIT / DEINIT
 
@@ -32,25 +36,26 @@ pub fn init(engine: *Engine, name: []const u8, src: []const u8) !*Self {
 
         .name = name,
         .src = src,
-
-        .lexer = undefined,
-        .parser = undefined,
     };
 
-    script.lexer = try Lexer.init(script);
+    script.stage.lexer = try Lexer.init(script);
 
     return script;
 }
 
 pub inline fn deinit(self: *Self) void {
-    self.lexer.deinit();
-    self.parser.deinit();
+    switch (self.stage) {
+        .lexer => |l| l.deinit(),
+        .parser => |p| p.deinit(),
+    }
+
     self.engine.allocator.destroy(self);
 }
 
 // LEXING / PARSING
 
-pub inline fn finishLexer(self: *Self) ![]ast.Lexer.LocatedToken {
-    while (!self.lexer.finished()) try self.lexer.next();
-    return self.lexer.output.items;
+pub inline fn tokenize(self: *Self) ![]ast.Lexer.LocatedToken {
+    while (!self.stage.lexer.finished()) try self.stage.lexer.next();
+    if (self.stage.lexer.logger.errors.items.len > 0) self.failed = true;
+    return self.stage.lexer.output.items;
 }

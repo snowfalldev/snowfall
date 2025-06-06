@@ -6,8 +6,7 @@ const parseUnsigned = std.fmt.parseUnsigned;
 const parseInt = std.fmt.parseInt;
 const parseFloat = std.fmt.parseFloat;
 
-const code_point = @import("code_point");
-const CodePoint = code_point.CodePoint;
+const runerip = @import("runerip");
 
 const Script = @import("../Script.zig");
 const BuiltinType = @import("../vm/types.zig").BuiltinType;
@@ -206,8 +205,10 @@ const message = log.simpleMessage(&.{
 });
 // zig fmt: on
 
-pub const Message = message.type;
-const Logger = log.Logger(.lexer, Message, message.print, message.level);
+pub const Message = message[0];
+const Logger = log.Logger(.lexer, Message, message[1]);
+
+pub const CodePoint = struct { code: u21, offset: usize, len: usize };
 
 // STRUCTURE
 
@@ -221,7 +222,7 @@ pos: Pos = .{},
 last: Pos = .{},
 start: Pos = .{},
 
-iter: code_point.Iterator,
+cursor: usize = 0,
 buf: struct { CodePoint, ?CodePoint } = .{ undefined, null },
 word: []const u8 = "",
 basic: bool = true,
@@ -241,12 +242,11 @@ pub fn init(script: *Script) !*Self {
         .arena = Arena.init(script.engine.allocator),
         .allocator = undefined,
         .output = undefined,
-        .iter = .{ .bytes = script.src },
         .logger = undefined,
     };
 
-    if (lexer.iter.next()) |char| lexer.buf[0] = char;
-    lexer.buf[1] = lexer.iter.next();
+    if (lexer.nextCodePoint()) |char| lexer.buf[0] = char;
+    lexer.buf[1] = lexer.nextCodePoint();
 
     lexer.allocator = lexer.arena.allocator();
     lexer.logger = Logger.init(lexer.allocator, script);
@@ -299,8 +299,14 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
     if (symbol) try self.addToken(.{ self.pos, self.pos }, .{ .symbol = @truncate(self.buf[0].code) });
 }
 
+inline fn nextCodePoint(self: *Self) ?CodePoint {
+    const offset = self.cursor;
+    const code = runerip.decodeRuneCursor(self.script.src, &self.cursor) catch return null;
+    return .{ .code = code, .offset = offset, .len = self.cursor - offset };
+}
+
 inline fn advanceRead(self: *Self) !void {
-    defer self.buf[1] = self.iter.next();
+    defer self.buf[1] = self.nextCodePoint();
     self.buf[0] = self.buf[1] orelse {
         // no next char, we're done
         self.pos.raw = self.script.src.len;
@@ -413,6 +419,14 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     try self.addToken(span, .{ .number = out });
 }
 
+inline fn nextPos(self: Self) Pos {
+    return .{
+        .raw = self.pos.raw + 1,
+        .row = self.pos.row,
+        .col = self.pos.col + 1,
+    };
+}
+
 fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
     self.basic = false;
     defer self.basic = true;
@@ -432,7 +446,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
         '{' => if (exit == '`') return '{',
         'x' => {
             try self.advance(); // Advance past 'x'.
-            const span = Span{ self.pos, self.pos.next() };
+            const span = Span{ self.pos, self.nextPos() };
 
             var chars: [2]u8 = undefined;
             inline for (0..2) |i| {
@@ -447,7 +461,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
         },
         'u' => {
             try self.advance(); // Advance past 'u'.
-            const esc_char_start = self.pos.next();
+            const esc_char_start = self.nextPos();
 
             if (self.buf[0].code == '{' and !isNewLine(self.buf[1].?.code)) parse: {
                 try self.advance(); // Advance past '{'.
@@ -473,7 +487,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
             }
 
             if (isNewLine(self.buf[1].?.code)) {
-                const fail_pos = self.pos.next();
+                const fail_pos = self.nextPos();
                 try self.advance();
                 try self.logger.log(.esc_no_end, .{ esc_seq_start, fail_pos }, fail_pos);
                 return error.UnexpectedEOL;

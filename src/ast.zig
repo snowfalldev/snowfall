@@ -12,17 +12,8 @@ const Number = @import("vm/value/number.zig").Number;
 
 pub const Pos = struct {
     raw: usize = 0,
-    row: usize = 0,
-    col: usize = 0,
-
-    // Returns the position after this one.
-    pub inline fn next(pos: Pos) Pos {
-        return .{
-            .raw = pos.raw + 1,
-            .row = pos.row,
-            .col = pos.col + 1,
-        };
-    }
+    row: u32 = 0,
+    col: u16 = 0,
 
     pub inline fn format(self: Pos, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         try std.fmt.format(writer, "{}:{}", .{ self.row, self.col });

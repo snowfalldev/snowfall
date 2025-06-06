@@ -3,9 +3,9 @@
     .version = "0.0.0",
     .fingerprint = 0x530afceb3d482077,
     .dependencies = .{
-        .zg = .{
-            .url = "git+https://codeberg.org/atman/zg.git#0b05141b033043c5f7bcd72048a48eef6531ea6c",
-            .hash = "zg-0.14.0-oGqU3KEFswIffnDu8eAE2XlhzwcfgjwtM6akIc5L7cEV",
+        .runerip = .{
+            .url = "git+https://github.com/mnemnion/runerip.git#a1d72b5a46ff8f877381dddf4d3930906b54fa7f",
+            .hash = "runerip-0.0.2-k0AJaT4VAQCEFJ7AVD5xbSzmhd3DvYBeKPSjz7X3T1rt",
         },
         .static_map = .{
             .url = "git+https://github.com/travisstaloch/static-map#4df175b63b27f134f804eadeb2418024435de278",
