@@ -7,7 +7,7 @@ const Engine = snowfall.Engine;
 pub const std_options = std.Options{ .logFn = snowfall.log.customLogFn };
 
 pub fn main() !void {
-    const data = @embedFile("testfile.he");
+    const data = @embedFile("testfile.sf");
 
     const allocator = if (builtin.mode == .Debug) blk: {
         var dbg_alloc = std.heap.DebugAllocator(.{}).init;
