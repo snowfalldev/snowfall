@@ -26,12 +26,15 @@ pub func main() void {
   testFunc(test, -1);
   const um = '\n';
   const um2 = 'na';
-  const um3 = '\xFP';
+  const um3 = '\xPF';
+  const um4 = '\x_F';
   std.println("Hello, world!");
   std.print('\u{1F480 }');
+  std.print('\u{1F48 0}');
+  std.print('\u{1F480}');
   std.print('\u{FFFFFFFFF}');
   std.print('\u{FFFFFF}');
-  std.print(" <- skull\n\u{1F480}\u{1F480}💀 <- oh it's here thrice\n");
+  std.print(" <- skull\n\u{1F480}\u{1_F480}💀 <- oh it's here thrice\n");
   std.println(`1 + 2 = {1 + 2}`);
   std.println("0.1 * 5.5 = ", 0.55);
   std.println(`3 + 1 = {4}`);

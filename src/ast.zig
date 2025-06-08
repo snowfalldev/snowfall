@@ -16,11 +16,13 @@ pub const Pos = struct {
     col: u16 = 0,
 
     pub inline fn format(self: Pos, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try std.fmt.format(writer, "{}:{}", .{ self.row, self.col });
+        try std.fmt.format(writer, "{}:{}", .{ self.row + 1, self.col + 1 });
     }
 };
 
 pub const Span = struct { Pos, Pos };
+
+pub const RowInfo = packed struct { raw: u48, len: u16 };
 
 // ABSTRACT SYNTAX TREE
 

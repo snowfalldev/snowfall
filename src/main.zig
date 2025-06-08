@@ -4,6 +4,8 @@ const builtin = @import("builtin");
 const helium = @import("helium");
 const Engine = helium.Engine;
 
+pub const std_options = std.Options{ .logFn = helium.log.customLogFn };
+
 pub fn main() !void {
     const data = @embedFile("testfile.he");
 
@@ -13,17 +15,15 @@ pub fn main() !void {
     } else std.heap.smp_allocator;
 
     var engine = Engine.init(allocator);
-    var module = try engine.registerScript("main", data);
-    const tokens = try module.tokenize();
-
     defer engine.deinit();
+    var module = try engine.registerScript("main", data);
+    try module.prepare();
 
-    const padding: [25]u8 = .{' '} ** 25;
-
-    for (tokens) |token| {
-        const string = try token.token.toDebugString(allocator);
-        defer allocator.free(string);
-        const offset = @min(25 -| string.len, 25);
-        std.debug.print(" - {s} {s}({}..{})\n", .{ string, padding[0..offset], token.span[0], token.span[1] });
-    }
+    for (module.tokens) |token|
+        std.debug.print("({}, {}..{}) {}\n", .{
+            token.span[0].raw,
+            token.span[0],
+            token.span[1],
+            token.token,
+        });
 }

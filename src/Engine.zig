@@ -1,9 +1,10 @@
 const std = @import("std");
 
+const util = @import("util.zig");
 const Script = @import("Script.zig");
 
 allocator: std.mem.Allocator,
-scripts: std.StringHashMap(*Script),
+scripts: util.StringHashMap(*Script),
 
 const Self = @This();
 
@@ -12,7 +13,7 @@ const Self = @This();
 pub inline fn init(allocator: std.mem.Allocator) Self {
     return .{
         .allocator = allocator,
-        .scripts = std.StringHashMap(*Script).init(allocator),
+        .scripts = util.StringHashMap(*Script).init(allocator),
     };
 }
 

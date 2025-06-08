@@ -1,17 +1,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const util = @import("../../util.zig");
 const Value = @import("../value.zig").Value;
 
 inner: []const u8,
 
 const Self = @This();
 
-const hash_seed_str: []align(8) const u8 = @alignCast("stringss");
-const hash_seed = @as(*const u64, @ptrCast(hash_seed_str)).*;
-
 pub inline fn hash(self: Self) u64 {
-    return std.hash.Wyhash.hash(hash_seed, self.inner);
+    return util.hashString(self.inner);
 }
 
 pub inline fn print(self: Self, writer: anytype) !void {

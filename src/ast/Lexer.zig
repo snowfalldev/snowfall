@@ -45,9 +45,7 @@ pub const Token = union(enum) {
 
     pub const String = struct {
         data: ast.String = .{},
-        formatting: ?struct {
-            end: bool = false,
-        } = null,
+        fmt: ?enum { part, end } = null,
     };
 
     // zig fmt: off
@@ -100,9 +98,13 @@ pub const Token = union(enum) {
         top_level: bool = false,
     };
 
-    // Write a token to a writer. Intended for debugging.
-    pub fn writeDebug(self: Token, writer: anytype) !void {
-        return switch (self) {
+    pub fn format(
+        self: *const Token,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self.*) {
             .null => try writer.writeAll("null"),
             .undefined => try writer.writeAll("undefined"),
             .bool => |v| try writer.print("bool: {}", .{v}),
@@ -115,11 +117,7 @@ pub const Token = union(enum) {
             .string => |v| {
                 try writer.print("string: \"{s}\"", .{v.data.text});
                 if (v.data.managed) try writer.writeAll(" (managed)");
-                if (v.formatting) |formatting| {
-                    try writer.writeAll(" (");
-                    if (formatting.end) try writer.writeAll("last ");
-                    try writer.writeAll("format segment)");
-                }
+                if (v.fmt) |fmt| try writer.print(" (format {s})", .{@tagName(fmt)});
             },
 
             .symbol => |v| {
@@ -133,14 +131,7 @@ pub const Token = union(enum) {
                 try writer.print("doc comment: \"{s}\"", .{v.text});
                 if (v.top_level) try writer.writeAll(" (top-level)");
             },
-        };
-    }
-
-    // Convert a token to string representation. Intended for debugging.
-    pub inline fn toDebugString(self: Token, allocator: Allocator) ![]const u8 {
-        var arraylist = std.ArrayList(u8).init(allocator);
-        try self.writeDebug(arraylist.writer());
-        return arraylist.toOwnedSlice();
+        }
     }
 };
 
@@ -189,10 +180,12 @@ const message = log.simpleMessage(&.{
     .{ .fatal, .unexpected_char_number, "unexpected character in number",  void },
 
     // escape sequences
-    .{ .err,   .invalid_esc,        "invalid escape sequence",      void },
-    .{ .fatal, .esc_no_end,         "escape sequence has no end",   void },
-    .{ .err,   .esc_too_large,      "escape sequence is too large", void },
-    .{ .err,   .non_hex_in_hex_esc, "non-hex character in hex escape sequence", void },
+    .{ .err,   .invalid_esc,   "invalid escape sequence",      void },
+    .{ .fatal, .esc_no_start,  "escape sequence has no start", void },
+    .{ .fatal, .esc_no_end,    "escape sequence has no end",   void },
+    .{ .err,   .esc_too_large, "escape sequence is too large", void },
+    .{ .err,   .non_hex_in_hex_esc,          "non-hex character in hex escape sequence",             void },
+    .{ .err,   .underscore_in_short_hex_esc, "underscores not allowed in short hex escape sequence", void },
 
     // characters
     .{ .err,   .empty_char,     "character cannot be empty", void },
@@ -205,14 +198,12 @@ const message = log.simpleMessage(&.{
 // zig fmt: on
 
 pub const Message = message[0];
-const Logger = log.Logger(.lexer, Message, message[1]);
+const Logger = log.Logger(Message, message[1]);
 
 // STRUCTURE
 
 script: *Script,
 
-arena: Arena,
-allocator: Allocator,
 output: std.ArrayListUnmanaged(LocatedToken) = .{},
 
 pos: Pos = .{},
@@ -221,6 +212,7 @@ start: Pos = .{},
 
 cursor: usize = 0,
 buf: struct { Rune, ?Rune } = .{ undefined, null },
+row_start: Pos = .{},
 word: []const u8 = "",
 basic: bool = true,
 fmt_string: bool = false,
@@ -233,26 +225,12 @@ const Self = @This();
 
 pub fn init(script: *Script) !*Self {
     var lexer = try script.engine.allocator.create(Self);
-
-    lexer.* = .{
-        .script = script,
-        .arena = Arena.init(script.engine.allocator),
-        .allocator = undefined,
-        .output = undefined,
-        .logger = undefined,
-    };
+    lexer.* = .{ .script = script, .logger = .{ .script = script } };
 
     if (Rune.decodeCursor(script.src, &lexer.cursor)) |rune| lexer.buf[0] = rune;
     lexer.buf[1] = Rune.decodeCursor(script.src, &lexer.cursor);
 
-    lexer.allocator = lexer.arena.allocator();
-    lexer.logger = Logger.init(lexer.allocator, script);
-
     return lexer;
-}
-
-pub inline fn deinit(self: Self) void {
-    self.arena.deinit();
 }
 
 // MISCELLANEOUS UTILITIES
@@ -269,7 +247,7 @@ pub inline fn finished(self: Self) bool {
 // IMPLEMENTATION
 
 inline fn addToken(self: *Self, span: Span, token: Token) !void {
-    try self.output.append(self.allocator, .{ .span = span, .token = token });
+    try self.output.append(self.script.allocator(), .{ .span = span, .token = token });
 }
 
 fn addWord(self: *Self, comptime symbol: bool) !void {
@@ -315,33 +293,47 @@ fn advance(self: *Self) !void {
 
     self.last = self.pos;
     try self.advanceRead();
+    self.pos.raw = self.buf[0].offset;
     self.pos.col += 1;
 
-    if (self.advanceCheck(self.buf[0].code)) {
-        // wont do anything if word len is 0, always call it
-        try @call(.always_inline, addWord, .{ self, false });
+    if (!self.advanceCheck(self.buf[0].code)) return;
+    // wont do anything if word len is 0, always call it
+    try @call(.always_inline, addWord, .{ self, false });
 
-        while (self.advanceCheck(self.buf[0].code)) {
-            const code1 = self.buf[0].code;
-            if (isNewLine(code1)) {
-                self.pos.row += 1;
-                self.pos.col = 0;
-            } else self.pos.col += 1;
+    while (self.advanceCheck(self.buf[0].code)) {
+        const code1 = self.buf[0].code;
+        const new_line = isNewLine(code1);
 
-            self.advanceRead() catch return;
-
-            const code2 = self.buf[0].code;
-            if ((code1 == '\r' and code2 == '\n') or
-                (code1 == '\n' and code2 == '\r'))
-            {
-                // encountered CRLF or LFCR, skip another character
-                // this allows us to treat these as one new line
-                self.advanceRead() catch return;
+        if (new_line) {
+            const len = (self.pos.raw - self.row_start.raw) - 1;
+            if (len > 65535) { // len must fit into a u16
+                const args = .{ self.pos.row + 1, self.script.name, len };
+                log.scoped.err("row {} in script {s} exceeded byte length limit ({} > 65535)", args);
+                return error.RowTooLong;
             }
-        }
-    }
 
-    self.pos.raw = self.buf[0].offset;
+            self.script.rows.items[self.pos.row].len = @truncate(len);
+
+            self.pos.row += 1;
+            self.pos.col = 0;
+        } else self.pos.col += 1;
+
+        self.advanceRead() catch return;
+        defer self.pos.raw = self.buf[0].offset;
+        if (!new_line) continue;
+
+        const code2 = self.buf[0].code;
+        if ((code1 == '\r' and code2 == '\n') or
+            (code1 == '\n' and code2 == '\r'))
+        {
+            // encountered CRLF or LFCR, skip another character
+            // this allows us to treat these as one new line
+            self.advanceRead() catch return;
+        }
+
+        self.row_start = self.pos;
+        try self.script.rows.append(self.script.allocator(), .{ .raw = @truncate(self.pos.raw + 1), .len = 0 });
+    }
 }
 
 inline fn tokenizeNumber(self: *Self, signed: bool) !void {
@@ -378,12 +370,11 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
             '8'...'9' => if (base < 10) return self.logger.log(.{ .mismatched_bases = .{ 10, base } }, span, self.pos),
             'a'...'d', 'A'...'D', 'f', 'F' => if (base != 16) return self.logger.log(.{ .mismatched_bases = .{ 16, base } }, span, self.pos),
             'e', 'E' => if (base != 16) {
-                if (base != 10) return self.logger.log(.{ .mismatched_bases = .{ 16, base } }, span, self.pos);
-                if (out.float) {
+                if (base == 10 and out.float) {
                     if (!exponent_reached) {
                         exponent_reached = true;
                     } else return self.logger.log(.unexpected_char_number, span, self.pos);
-                } else return self.logger.log(.{ .mismatched_bases = .{ 16, 10 } }, span, self.pos);
+                } else return self.logger.log(.{ .mismatched_bases = .{ 16, base } }, span, self.pos);
             },
             '+', '-' => if (exponent_reached and !exp_sign_reached) {
                 exp_sign_reached = true;
@@ -426,14 +417,10 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
     try self.advance();
 
     switch (self.buf[0].code) {
-        'n', 'r', 't', '\\' => |esc| {
-            return switch (esc) {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                else => esc,
-            };
-        },
+        'n' => return '\n',
+        'r' => return '\r',
+        't' => return '\t',
+        '\\' => return '\\',
         '{' => if (exit == '`') return '{',
         'x' => {
             try self.advance(); // Advance past 'x'.
@@ -442,8 +429,12 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
             var chars: [2]u8 = undefined;
             inline for (0..2) |i| {
                 chars[i] = @truncate(self.buf[0].code);
-                if (!(isHexadecimalChar(chars[i]) or chars[i] == '_')) {
-                    try self.logger.log(.non_hex_in_hex_esc, span, self.pos);
+                if (!isHexadecimalChar(chars[i])) {
+                    const msg: Message = if (chars[i] == '_')
+                        .underscore_in_short_hex_esc
+                    else
+                        .non_hex_in_hex_esc;
+                    try self.logger.log(msg, span, self.pos);
                     return error.InvalidCharacter;
                 } else if (i == 0) try self.advance();
             }
@@ -453,22 +444,31 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
         'u' => {
             try self.advance(); // Advance past 'u'.
             const esc_char_start = self.nextPos();
+            var non_hex_pos = Pos{};
 
-            if (self.buf[0].code == '{' and !isNewLine(self.buf[1].?.code)) parse: {
+            if (self.buf[0].code != '{') {
+                try self.logger.log(.esc_no_start, .{ esc_seq_start, self.pos }, self.pos);
+                return error.InvalidCharacter;
+            }
+
+            if (!isNewLine(self.buf[1].?.code)) parse: {
                 try self.advance(); // Advance past '{'.
 
                 var idx: usize = 5;
-                while (true) : (try self.advance()) {
-                    if (self.buf[0].code == '}') break;
+                while (self.buf[0].code != '}') : (try self.advance()) {
+                    if (self.buf[0].code == '_') continue;
 
-                    if (!(isHexadecimalChar(self.buf[0].code) or self.buf[0].code == '_') or
-                        isNewLine(self.buf[1].?.code)) break :parse;
+                    if (!isHexadecimalChar(self.buf[0].code) or isNewLine(self.buf[1].?.code)) {
+                        non_hex_pos = self.pos;
+                        while (self.buf[0].code != '}') try self.advance();
+                        break :parse;
+                    }
 
                     if (idx == 0) {
                         while (self.buf[0].code != '}') try self.advance();
                         try self.logger.log(.esc_too_large, .{ esc_seq_start, self.pos }, null);
                         return error.Overflow;
-                    } else idx -|= 1;
+                    } else idx -= 1;
                 }
 
                 return parseUnsigned(u21, self.script.src[esc_char_start.raw..self.pos.raw], 16) catch {
@@ -484,7 +484,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
                 return error.UnexpectedEOL;
             }
 
-            try self.logger.log(.non_hex_in_hex_esc, .{ esc_char_start, self.pos }, self.pos);
+            try self.logger.log(.non_hex_in_hex_esc, .{ esc_char_start, self.last }, non_hex_pos);
             return error.InvalidCharacter;
         },
         else => |char| if (char == exit) return char,
@@ -529,8 +529,7 @@ pub fn next(self: *Self) !void {
                 const formatted = exit == '`';
                 if (formatted) self.fmt_string = true;
 
-                // use the engine allocator so they don't free after arena deinit
-                const allocator = self.script.engine.allocator;
+                const allocator = self.script.allocator();
                 var buffer = std.ArrayList(u8).init(allocator);
                 var out = Token.String{};
 
@@ -547,7 +546,7 @@ pub fn next(self: *Self) !void {
                         }
 
                         if (formatted) {
-                            out.formatting = .{ .end = end };
+                            out.fmt = if (end) .end else .part;
                             if (end) self.fmt_string = false;
                         }
 
@@ -621,8 +620,10 @@ pub fn next(self: *Self) !void {
                     else => unreachable,
                 }
 
-                if (out.top_level and span[0].raw != 0)
+                if (out.top_level and span[0].raw != 0) {
                     try self.logger.log(.misplaced_top_level_doc, span, null);
+                    continue;
+                }
 
                 out.text = self.script.src[start.raw .. span[1].raw + 1];
                 if (doc) try self.addToken(span, .{ .doc_comment = out });

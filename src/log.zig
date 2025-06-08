@@ -13,20 +13,56 @@ const unicode = @import("unicode.zig");
 const tty = std.io.tty;
 const Color = tty.Color;
 
-// UTILITIES
+// INTERNAL LOGGING HELPERS
 
-// std.log.Level with fatal added.
-pub const Level = enum { fatal, err, warn, info, debug };
+// scope our logs so they work well as a library
+pub const scoped = std.log.scoped(.helium);
 
 var config: tty.Config = undefined;
 var get_config_once = std.once(get_config);
 fn get_config() void {
-    std.debug.lockStdErr();
-    defer std.debug.unlockStdErr();
     config = tty.detectConfig(std.io.getStdErr());
 }
 
+pub fn customLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (!std.log.logEnabled(level, scope)) return;
+
+    get_config_once.call();
+    const color: Color = switch (level) {
+        .err => .red,
+        .warn => .yellow,
+        .info => .green,
+        .debug => .cyan,
+    };
+
+    std.debug.lockStdErr();
+    defer std.debug.unlockStdErr();
+    const stderr = std.io.getStdErr().writer();
+    var bw = std.io.bufferedWriter(stderr);
+    const writer = bw.writer();
+
+    // we use .helium as our log scope throughout the library code, treat that the same as .default
+    const prefix = if (scope == .helium or scope == .default) "" else @tagName(scope) ++ ": ";
+
+    nosuspend {
+        config.setColor(writer, .reset) catch return;
+        config.setColor(writer, color) catch return;
+        writer.writeAll(comptime level.asText() ++ ": ") catch return;
+        config.setColor(writer, .reset) catch return;
+        writer.print(prefix ++ format, args) catch return;
+        bw.flush() catch return;
+    }
+}
+
 // LOGGER STRUCTURE
+
+// std.log.Level with fatal added.
+pub const Level = enum { fatal, err, warn, info, debug };
 
 pub fn ToolsT(comptime Message: type) type {
     return struct {
@@ -36,7 +72,6 @@ pub fn ToolsT(comptime Message: type) type {
 }
 
 fn MsgContainer(
-    comptime scope: @Type(.enum_literal),
     comptime Message: type,
     comptime tools: ToolsT(Message),
 ) type {
@@ -50,54 +85,26 @@ fn MsgContainer(
 
         pub fn format(
             self: *const Self,
-            comptime fmt: []const u8,
-            options: std.fmt.FormatOptions,
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
             writer: anytype,
         ) !void {
-            _ = fmt;
-            _ = options;
-            return self.printRaw(writer, false);
-        }
-
-        pub inline fn printRaw(
-            self: *const Self,
-            writer: anytype,
-            stderr: bool,
-        ) !void {
-            if (stderr) {
-                // set to bold before we print message
-                try config.setColor(writer, .reset);
-                try config.setColor(writer, .bold);
-            }
-
             try tools.print(&self.msg, writer); // print message
 
-            if (builtin.mode == .Debug) // print scope in debug mode
-                try writer.writeAll("[" ++ @tagName(scope) ++ "] ");
-
             // print script name & position
-            try writer.print(" ({s} - {}:{})\n", .{
+            try writer.print(" ({s}:{}:{})\n", .{
                 self.script.name,
                 self.span[0].row + 1,
                 self.span[0].col + 1,
             });
 
-            // reset color before we print affected code
-            if (stderr) try config.setColor(writer, .reset);
-
-            // find affected line bounds
-            const src = self.script.src;
-            var start = self.span[0].raw - self.span[0].col;
-            while (start > 0 and !unicode.isNewLine(src[start - 1])) start -= 1;
-            var end: usize = start;
-            while (end < src.len and !unicode.isNewLine(src[end])) end += 1;
-
             // print affected line
-            try writer.writeAll(src[start..end]);
+            const src = self.script.src;
+            const row = self.script.rows.items[self.span[0].row];
+            var end: usize = row.raw + self.span[1].col + 1;
+            while (end < src.len and !unicode.isNewLine(src[end])) end += 1;
+            try writer.writeAll(src[row.raw..end]);
             try writer.writeByte('\n');
-
-            // set color to bright green before we print highlight
-            if (stderr) try config.setColor(writer, .green);
 
             // highlight affected section
             try writer.writeByteNTimes(' ', self.span[0].col);
@@ -114,9 +121,6 @@ fn MsgContainer(
                 try writer.writeByteNTimes('~', rem);
             }
             try writer.writeByte('\n');
-
-            // reset color before we leave
-            if (stderr) try config.setColor(writer, .reset);
         }
 
         pub inline fn level(self: Self) Level {
@@ -126,67 +130,59 @@ fn MsgContainer(
 }
 
 pub fn Logger(
-    comptime scope: @Type(.enum_literal),
     comptime Message: type,
     comptime tools: ToolsT(Message),
 ) type {
     return struct {
         script: *Script,
-        allocator: Allocator,
-        errors: std.ArrayList(Container),
-        others: std.ArrayList(Container),
+        errors: std.ArrayListUnmanaged(Container) = .{},
+        others: std.ArrayListUnmanaged(Container) = .{},
 
         const Self = @This();
 
-        const Container = MsgContainer(scope, Message, tools);
-
-        pub fn init(allocator: Allocator, script: *Script) Self {
-            get_config_once.call();
-
-            return .{
-                .script = script,
-                .allocator = allocator,
-                .errors = std.ArrayList(Container).init(allocator),
-                .others = std.ArrayList(Container).init(allocator),
-            };
-        }
+        pub const Container = MsgContainer(Message, tools);
 
         pub inline fn deinit(self: Self) void {
-            self.msgs.deinit();
+            self.errors.deinit(self.script.allocator());
+            self.others.deinit(self.script.allocator());
         }
 
         pub fn log(self: *Self, msg: Message, span: Span, hi: ?Pos) !void {
+            if (self.script.failed) return;
+
             const c = Container{ .script = self.script, .msg = msg, .span = span, .hi = hi };
             const level = c.level();
 
-            if (level == .fatal) self.script.failed = true;
+            if (level == .fatal) self.script.failed = true; // Fatal Fails Fast
 
-            switch (level) {
-                .fatal, .err => try self.errors.append(c),
-                else => try self.others.append(c),
-            }
+            try switch (level) {
+                .fatal, .err => self.logInner(.err, c),
+                .warn => self.logInner(.warn, c),
+                .info => self.logInner(.info, c),
+                .debug => self.logInner(.debug, c),
+            };
+        }
 
-            const color: Color, const name = switch (level) {
-                .fatal => .{ .red, "fatal" },
-                .err => .{ .red, "error" },
-                .warn => .{ .yellow, "warning" },
-                .info => .{ .green, "info" },
-                .debug => .{ .cyan, "debug" },
+        inline fn logInner(self: *Self, comptime level: std.log.Level, msg: Container) !void {
+            try switch (level) { // store message
+                .err => self.errors.append(self.script.allocator(), msg),
+                else => self.others.append(self.script.allocator(), msg),
             };
 
-            std.debug.lockStdErr();
-            defer std.debug.unlockStdErr();
-            const stderr = std.io.getStdErr().writer();
+            // store lower level logs but don't print
+            if (!std.log.logEnabled(level, .helium)) return;
 
-            // print level
-            try config.setColor(stderr, .reset);
-            try config.setColor(stderr, .bold);
-            try config.setColor(stderr, color);
-            if (level == .fatal) try config.setColor(stderr, .dim);
-            try stderr.print("{s}: ", .{name});
+            switch (level) { // print message
+                .err => scoped.err("{}", .{msg}),
+                .warn => scoped.warn("{}", .{msg}),
+                .info => scoped.info("{}", .{msg}),
+                .debug => scoped.debug("{}", .{msg}),
+            }
+        }
 
-            // print message
-            try c.printRaw(stderr, true);
+        pub inline fn failedEarly(self: Self) bool {
+            if (self.errors.items.len == 0) return false;
+            return self.errors.items[self.errors.items.len - 1].level() == .fatal;
         }
     };
 }
@@ -234,10 +230,9 @@ fn SimpleMessageT(comptime messages: []const SimpleMessageInfo) type {
     return @Type(.{ .@"union" = union_info });
 }
 
-pub fn simpleMessage(comptime messages: []const SimpleMessageInfo) blk: {
-    const Message = SimpleMessageT(messages);
-    break :blk struct { type, ToolsT(Message) };
-} {
+pub fn simpleMessage(
+    comptime messages: []const SimpleMessageInfo,
+) struct { type, ToolsT(SimpleMessageT(messages)) } {
     const Message = SimpleMessageT(messages);
 
     const Functions = struct {

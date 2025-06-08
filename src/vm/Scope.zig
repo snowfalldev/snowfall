@@ -2,8 +2,8 @@ const std = @import("std");
 const Arena = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 
+const util = @import("../util.zig");
 const Script = @import("../Script.zig");
-
 const Value = @import("values.zig").Value;
 
 const Self = @This();
@@ -14,7 +14,7 @@ parent: ?*Self = null,
 arena: Arena,
 allocator: Allocator,
 
-vars: std.StringHashMapUnmanaged(Variable),
+vars: util.StringHashMapUnmanaged(Variable) = .{},
 // lock for reading the vars map, not for var mutation
 // only writer should be the thread the scope runs in
 lock: std.Thread.RwLock = .{},
