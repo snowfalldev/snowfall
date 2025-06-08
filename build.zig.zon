@@ -1,7 +1,7 @@
 .{
-    .name = .helium,
+    .name = .snowfall,
     .version = "0.0.0",
-    .fingerprint = 0x530afceb3d482077,
+    .fingerprint = 0xf430ffe2a8515eae,
     .dependencies = .{
         .runerip = .{
             .url = "git+https://github.com/mnemnion/runerip.git#a1d72b5a46ff8f877381dddf4d3930906b54fa7f",
@@ -12,7 +12,7 @@
             .hash = "static_map-0.0.0--1e1AmWtAABn_Vbql_z0pJeu-MUCSxUc6GBskRl8i6yi",
         },
         .zig_gc = .{
-            .url = "git+https://github.com/heliumlang/zig-gc.git#a0133c52f34f8709606ae56b2e929c2bdf3ac3c9",
+            .url = "git+https://github.com/snowfalldev/zig-gc.git#a0133c52f34f8709606ae56b2e929c2bdf3ac3c9",
             .hash = "zig_gc-0.0.0-ghUDpIK_RwCxLqAbWcKWGjOYA7c2iNWFTUi2FZeb9JUg",
         },
     },

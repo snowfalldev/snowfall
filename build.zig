@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) anyerror!void {
 
     // MODULE
 
-    const mod = b.addModule("helium", .{
+    const mod = b.addModule("snowfall", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -32,14 +32,14 @@ pub fn build(b: *std.Build) anyerror!void {
     // RUNTIME
 
     const exe = b.addExecutable(.{
-        .name = "helium",
+        .name = "snowfall",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .version = try std.SemanticVersion.parse("0.0.1"),
     });
 
-    exe.root_module.addImport("helium", mod);
+    exe.root_module.addImport("snowfall", mod);
 
     b.installArtifact(exe);
 
@@ -57,7 +57,7 @@ pub fn build(b: *std.Build) anyerror!void {
     //    .optimize = optimize,
     //});
 
-    //tests.root_module.addImport("helium", mod);
+    //tests.root_module.addImport("snowfall", mod);
 
     //const tests_step = b.step("test", "Run all tests");
     //tests_step.dependOn(&b.addRunArtifact(tests).step);

@@ -1,4 +1,4 @@
-# Helium
+# Snowfall
 
 An easily embeddable scripting language for Zig.
 

@@ -16,7 +16,7 @@ const Color = tty.Color;
 // INTERNAL LOGGING HELPERS
 
 // scope our logs so they work well as a library
-pub const scoped = std.log.scoped(.helium);
+pub const scoped = std.log.scoped(.snowfall);
 
 var config: tty.Config = undefined;
 var get_config_once = std.once(get_config);
@@ -46,8 +46,8 @@ pub fn customLogFn(
     var bw = std.io.bufferedWriter(stderr);
     const writer = bw.writer();
 
-    // we use .helium as our log scope throughout the library code, treat that the same as .default
-    const prefix = if (scope == .helium or scope == .default) "" else @tagName(scope) ++ ": ";
+    // we use .snowfall as our log scope throughout the library code, treat that the same as .default
+    const prefix = if (scope == .snowfall or scope == .default) "" else @tagName(scope) ++ ": ";
 
     nosuspend {
         config.setColor(writer, .reset) catch return;
@@ -170,7 +170,7 @@ pub fn Logger(
             };
 
             // store lower level logs but don't print
-            if (!std.log.logEnabled(level, .helium)) return;
+            if (!std.log.logEnabled(level, .snowfall)) return;
 
             switch (level) { // print message
                 .err => scoped.err("{}", .{msg}),

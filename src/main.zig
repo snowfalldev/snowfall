@@ -1,10 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const helium = @import("helium");
-const Engine = helium.Engine;
+const snowfall = @import("snowfall");
+const Engine = snowfall.Engine;
 
-pub const std_options = std.Options{ .logFn = helium.log.customLogFn };
+pub const std_options = std.Options{ .logFn = snowfall.log.customLogFn };
 
 pub fn main() !void {
     const data = @embedFile("testfile.he");
