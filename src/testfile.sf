@@ -23,6 +23,7 @@ bigger doc comment
 im multiline too!!
 */
 pub func main() void {
+  const really_stupidly_long_identifier_that_doesnt_need_to_exist_just_stop = "lol";
   testFunc(test, -1);
   const um = '\n';
   const um2 = 'na';

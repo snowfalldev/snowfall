@@ -194,6 +194,7 @@ const message = log.simpleMessage(&.{
 
     // miscellaneous
     .{ .err, .misplaced_top_level_doc, "top-level doc comments must be at the start of the script", void },
+    .{ .err, .identifier_too_long,     "identifier exceeds maximum length ({} bytes > 64 bytes)",   struct { usize } },
 });
 // zig fmt: on
 
@@ -252,9 +253,16 @@ inline fn addToken(self: *Self, span: Span, token: Token) !void {
 
 fn addWord(self: *Self, comptime symbol: bool) !void {
     if (self.word.len > 0) {
+        defer self.word.len = 0;
         self.word.ptr = self.script.src.ptr + self.start.raw;
 
+        const span = Span{ self.start, self.last };
         const token: ?Token = blk: {
+            if (self.word.len > 64) {
+                try self.logger.log(.{ .identifier_too_long = .{self.word.len} }, span, null);
+                break :blk .{ .identifier = "" };
+            }
+
             if (std.mem.eql(u8, self.word, "null")) break :blk .null;
             if (std.mem.eql(u8, self.word, "undefined")) break :blk .undefined;
             if (std.mem.eql(u8, self.word, "true")) break :blk .{ .bool = true };
@@ -266,9 +274,7 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
             } else break :blk null;
         };
 
-        if (token) |tok| try self.addToken(.{ self.start, self.last }, tok);
-
-        self.word.len = 0;
+        if (token) |tok| try self.addToken(span, tok);
     }
 
     if (symbol) try self.addToken(.{ self.pos, self.pos }, .{ .symbol = @truncate(self.buf[0].code) });
@@ -308,6 +314,7 @@ fn advance(self: *Self) !void {
             const len = (self.pos.raw - self.row_start.raw) - 1;
             if (len > 65535) { // len must fit into a u16
                 const args = .{ self.pos.row + 1, self.script.name, len };
+                // we don't use the logger here because trying to print the huge row is a bad idea
                 log.scoped.err("row {} in script {s} exceeded byte length limit ({} > 65535)", args);
                 return error.RowTooLong;
             }

@@ -1,20 +1,17 @@
 const std = @import("std");
 
-const util = @import("util.zig");
+const hash = @import("util.zig").hash;
 const Script = @import("Script.zig");
 
 allocator: std.mem.Allocator,
-scripts: util.StringHashMap(*Script),
+scripts: hash.StringHashMapUnmanaged(*Script, hash.rapidhash) = .{},
 
 const Self = @This();
 
 // INIT / DEINIT
 
 pub inline fn init(allocator: std.mem.Allocator) Self {
-    return .{
-        .allocator = allocator,
-        .scripts = util.StringHashMap(*Script).init(allocator),
-    };
+    return .{ .allocator = allocator };
 }
 
 pub fn deinit(self: *Self) void {
@@ -22,14 +19,14 @@ pub fn deinit(self: *Self) void {
     while (scripts.next()) |script|
         script.value_ptr.*.deinit();
 
-    self.scripts.deinit();
+    self.scripts.deinit(self.allocator);
 }
 
 // REGISTER SCRIPTS
 
 pub inline fn registerScript(self: *Self, name: []const u8, src: []const u8) !*Script {
     const script = try Script.init(self, name, src);
-    try self.scripts.put(name, script);
+    try self.scripts.put(self.allocator, name, script);
     return script;
 }
 
