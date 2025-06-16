@@ -1,10 +1,10 @@
 const std = @import("std");
 
-const hash = @import("util.zig").hash;
+const hash = @import("utils").hash;
 const Script = @import("Script.zig");
 
 allocator: std.mem.Allocator,
-scripts: hash.StringHashMapUnmanaged(*Script, hash.rapidhash) = .{},
+scripts: hash.StringHashMapUnmanaged(*Script, .safest) = .{},
 
 const Self = @This();
 

@@ -1,12 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const utils = @import("utils");
+
 pub const Lexer = @import("ast/Lexer.zig");
 const Token = Lexer.Token;
 
 pub const Parser = @import("ast/Parser.zig");
-
-const Number = @import("vm/value/number.zig").Number;
 
 // SOURCE FILE POSITIONS
 
@@ -35,9 +35,19 @@ pub const BlockStatement = union(enum) {
     assignment: Assignment,
 };
 
-pub const Block = std.ArrayList(BlockStatement);
+pub const Block = []const BlockStatement;
 
 // OPERANDS
+
+pub const String = struct {
+    text: []const u8 = "",
+    managed: bool = false,
+};
+
+pub const Number = union(enum) {
+    float: f64,
+    int: std.math.big.int.Const,
+};
 
 pub const LiteralOperand = union(enum) {
     null,
@@ -60,11 +70,6 @@ pub const LiteralOperand = union(enum) {
             else => null,
         };
     }
-};
-
-pub const String = struct {
-    text: []const u8 = "",
-    managed: bool = false,
 };
 
 pub const Template = struct {
@@ -205,9 +210,26 @@ pub const Operation = struct {
 };
 
 // TYPES
+pub const BasicType = enum(u8) {
+    int = 0x00,
+    float = 0x05,
+    string = 0x40,
+    char = 0x45,
+    bool = 0x50,
+    void = 0x60,
+    //func = 0x80,
+    //any = 0xFF,
+
+    pub const string_map = utils.EnumStringMap(BasicType, .fastest);
+};
+
 pub const PointerType = struct {
     constant: bool = false,
-    slice: bool = false,
+    kind: enum {
+        single, // *Type
+        slice, // []Type
+        many, // [*]Type
+    } = .single,
     expression: *Type = undefined,
 };
 
@@ -217,7 +239,8 @@ pub const ArrayType = struct {
 };
 
 pub const Type = union(enum) {
-    single: NonLiteralOperand,
+    builtin: BasicType,
+    custom: []const u8,
     ptr: PointerType,
     array: ArrayType,
     func: FunctionType,

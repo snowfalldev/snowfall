@@ -6,10 +6,7 @@ const parseUnsigned = std.fmt.parseUnsigned;
 const parseInt = std.fmt.parseInt;
 const parseFloat = std.fmt.parseFloat;
 
-const Script = @import("../Script.zig");
-const BuiltinType = @import("../vm/types.zig").BuiltinType;
-
-const util = @import("../util.zig");
+const utils = @import("utils");
 
 const unicode = @import("../unicode.zig");
 const Rune = unicode.Rune;
@@ -21,6 +18,9 @@ const isHexadecimalChar = unicode.isHexadecimal;
 const ast = @import("../ast.zig");
 const Pos = ast.Pos;
 const Span = ast.Span;
+const BasicType = ast.BasicType;
+
+const Script = @import("../Script.zig");
 
 pub const Token = union(enum) {
     // values
@@ -34,7 +34,7 @@ pub const Token = union(enum) {
     // other
     symbol: u8,
     keyword: Keyword,
-    builtin_type: BuiltinType,
+    basic_type: BasicType,
     identifier: []const u8,
     doc_comment: DocComment,
 
@@ -48,8 +48,9 @@ pub const Token = union(enum) {
         fmt: ?enum { part, end } = null,
     };
 
-    // zig fmt: off
+    /// Current count: 31
     pub const Keyword = enum {
+        // zig fmt: off
         as, // casting
 
         @"and", @"or", // boolean operations
@@ -66,6 +67,7 @@ pub const Token = union(enum) {
         @"pub",   // publicize declaration
         @"const", // declare constant variable
         @"var",   // declare mutable variable
+        @"type",  // declare type
 
         func,        // define function
         @"return",   // return from function
@@ -88,10 +90,10 @@ pub const Token = union(enum) {
 
         import, // import a script
         from, // cherry-pick imports
+        // zig fmt: on
 
-        pub const string_map = util.enumStringMap(Keyword);
+        pub const string_map = utils.EnumStringMap(Keyword, .fastest);
     };
-    // zig fmt: on
 
     pub const DocComment = struct {
         text: []const u8 = "",
@@ -125,7 +127,7 @@ pub const Token = union(enum) {
                 try writer.writeByte(v);
             },
             .keyword => |v| try writer.print("keyword: {s}", .{@tagName(v)}),
-            .builtin_type => |v| try writer.print("built-in type: {s}", .{@tagName(v)}),
+            .basic_type => |v| try writer.print("basic type: {s}", .{@tagName(v)}),
             .identifier => |v| try writer.print("identifier: {s}", .{v}),
             .doc_comment => |v| {
                 try writer.print("doc comment: \"{s}\"", .{v.text});
@@ -267,11 +269,9 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
             if (std.mem.eql(u8, self.word, "undefined")) break :blk .undefined;
             if (std.mem.eql(u8, self.word, "true")) break :blk .{ .bool = true };
             if (std.mem.eql(u8, self.word, "false")) break :blk .{ .bool = false };
-            if (self.word.len > 0 and !isNumberChar(self.word[0])) {
-                if (Token.Keyword.string_map.get(self.word)) |kw| break :blk .{ .keyword = kw };
-                if (BuiltinType.string_map.get(self.word)) |t| break :blk .{ .builtin_type = t };
-                break :blk .{ .identifier = self.word };
-            } else break :blk null;
+            if (Token.Keyword.string_map.get(self.word)) |kw| break :blk .{ .keyword = kw };
+            if (BasicType.string_map.get(self.word)) |t| break :blk .{ .basic_type = t };
+            break :blk .{ .identifier = self.word };
         };
 
         if (token) |tok| try self.addToken(span, tok);
@@ -338,8 +338,9 @@ fn advance(self: *Self) !void {
             self.advanceRead() catch return;
         }
 
+        const row = ast.RowInfo{ .raw = @truncate(self.pos.raw + 1), .len = 0 };
+        try self.script.rows.append(self.script.allocator(), row);
         self.row_start = self.pos;
-        try self.script.rows.append(self.script.allocator(), .{ .raw = @truncate(self.pos.raw + 1), .len = 0 });
     }
 }
 

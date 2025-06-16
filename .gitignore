@@ -1,5 +1,3 @@
 .zig-cache/
 zig-out/
-
-# added by github codespaces
-.vscode
+*.o

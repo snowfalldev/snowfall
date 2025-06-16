@@ -10,11 +10,11 @@ pub fn build(b: *std.Build) anyerror!void {
     const runerip = b.dependency("runerip", .{});
     const runerip_mod = runerip.module("runerip");
 
-    const static_map = b.dependency("static_map", .{});
-    const static_map_mod = static_map.module("static-map");
-
     const zig_gc = b.dependency("zig_gc", .{});
     const zig_gc_mod = zig_gc.module("gc");
+
+    const utils = b.dependency("utils", .{});
+    const utils_mod = utils.module("utils");
 
     // MODULE
 
@@ -24,8 +24,8 @@ pub fn build(b: *std.Build) anyerror!void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "runerip", .module = runerip_mod },
-            .{ .name = "static-map", .module = static_map_mod },
             .{ .name = "gc", .module = zig_gc_mod },
+            .{ .name = "utils", .module = utils_mod },
         },
     });
 
