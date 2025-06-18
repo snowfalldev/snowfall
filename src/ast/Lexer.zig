@@ -294,6 +294,9 @@ inline fn advanceCheck(self: Self, char: u21) bool {
     return isNewLine(char) or (self.basic and unicode.isSpace(char));
 }
 
+const max_row = std.math.maxInt(u32); // 4294967295
+const max_col = std.math.maxInt(u16); // 65535
+
 fn advance(self: *Self) !void {
     if (self.finished()) return error.UnexpectedEOF;
 
@@ -312,11 +315,15 @@ fn advance(self: *Self) !void {
 
         if (new_line) {
             const len = (self.pos.raw - self.row_start.raw) - 1;
-            if (len > 65535) { // len must fit into a u16
+            if (len > max_col) {
                 const args = .{ self.pos.row + 1, self.script.name, len };
                 // we don't use the logger here because trying to print the huge row is a bad idea
                 log.scoped.err("row {} in script {s} exceeded byte length limit ({} > 65535)", args);
                 return error.RowTooLong;
+            } else if (self.pos.row == max_row) {
+                // we don't use the logger here because we don't need to print the row
+                log.scoped.err("script {s} exceeded maximum row count of {}", .{ self.script.name, max_row });
+                return error.TooManyRows;
             }
 
             self.script.rows.items[self.pos.row].len = @truncate(len);

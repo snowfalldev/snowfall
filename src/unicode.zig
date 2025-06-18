@@ -6,15 +6,15 @@ const std = @import("std");
 
 const runerip = @import("runerip");
 
-pub const Rune = struct {
-    code: u21,
+pub const Rune = packed struct {
     offset: usize,
-    len: usize,
+    code: u21,
+    len: u3,
 
     pub inline fn decodeCursor(slice: []const u8, cursor: *usize) ?Rune {
         const offset = cursor.*;
         const code = runerip.decodeRuneCursor(slice, cursor) catch return null;
-        return .{ .code = code, .offset = offset, .len = cursor.* - offset };
+        return .{ .offset = offset, .code = code, .len = @truncate(cursor.* - offset) };
     }
 };
 
