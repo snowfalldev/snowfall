@@ -68,7 +68,7 @@ pub inline fn prepare(self: *Self) !void {
     while (!self.stage.lexer.finished())
         self.stage.lexer.next() catch {
             self.failed = true;
-            return error.LexerFailed;
+            //return error.LexerFailed;
         };
 
     if (self.stage.lexer.logger.errors.items.len > 0) {

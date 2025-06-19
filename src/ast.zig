@@ -125,19 +125,6 @@ pub const Comparator = enum(u8) {
     gt, lt,
     gt_eq, lt_eq,
     // zig fmt: on
-
-    pub inline fn toString(cmp: Comparator) []const u8 {
-        return switch (cmp) {
-            .eq => "==",
-            .ne => "!=",
-
-            .gt => ">",
-            .lt => "<",
-
-            .gt_eq => ">=",
-            .lt_eq => "<=",
-        };
-    }
 };
 
 pub const BitwiseOp = enum {
@@ -145,27 +132,6 @@ pub const BitwiseOp = enum {
     ls, rs, urs,
     @"and", @"or", xor,
     // zig fmt: on
-
-    pub inline fn toString(op: BitwiseOp) []const u8 {
-        return switch (op) {
-            .ls => "<<",
-            .rs => ">>",
-            .urs => ">>>",
-
-            .@"and" => "&",
-            .@"or" => "|",
-            .xor => "^",
-        };
-    }
-
-    pub inline fn fromSymbol(symbol: u8) ?BitwiseOp {
-        return switch (symbol) {
-            '&' => .@"and",
-            '|' => .@"or",
-            '^' => .xor,
-            else => null,
-        };
-    }
 };
 
 pub const MathOp = enum {
@@ -173,28 +139,6 @@ pub const MathOp = enum {
     add, sub,
     mul, div, mod,
     // zig fmt: on
-
-    pub inline fn toString(op: MathOp) []const u8 {
-        return switch (op) {
-            .add => "+",
-            .sub => "-",
-
-            .mul => "*",
-            .div => "/",
-            .mod => "%",
-        };
-    }
-
-    pub inline fn fromSymbol(symbol: u8) ?MathOp {
-        return switch (symbol) {
-            '+' => .add,
-            '-' => .sub,
-            '*' => .mul,
-            '/' => .div,
-            '%' => .mod,
-            else => null,
-        };
-    }
 };
 
 pub const Operator = union(enum) { math: MathOp, bw: BitwiseOp };

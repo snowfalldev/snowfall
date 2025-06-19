@@ -28,7 +28,7 @@ pub fn writeCharUtf8(char: u21, writer: anytype) !void {
         try writer.writeByte(@as(u8, @intCast(0b11000000 | (char >> 6))));
         try writer.writeByte(@as(u8, @intCast(0b10000000 | (char & 0b111111))));
     } else if (char < 0x10000) {
-        if (0xd800 <= char and char <= 0xdfff) return error.CannotEncodeSurrogateHalf;
+        if (char >= 0xD800 and char <= 0xDFFF) return error.CannotEncodeSurrogateHalf;
         try writer.writeByte(@as(u8, @intCast(0b11100000 | (char >> 12))));
         try writer.writeByte(@as(u8, @intCast(0b10000000 | ((char >> 6) & 0b111111))));
         try writer.writeByte(@as(u8, @intCast(0b10000000 | (char & 0b111111))));

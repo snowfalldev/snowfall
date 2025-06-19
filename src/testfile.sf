@@ -29,6 +29,8 @@ pub func main() void {
   const um2 = 'na';
   const um3 = '\xPF';
   const um4 = '\x_F';
+  const um5 = '\u{DAAA}';
+  const yeah = '\xFF';
   std.println("Hello, world!");
   std.print('\u{1F480 }');
   std.print('\u{1F48 0}');

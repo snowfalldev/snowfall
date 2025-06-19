@@ -171,6 +171,9 @@ inline fn isSymbol(char: u21) bool {
     };
 }
 
+const max_row = std.math.maxInt(u32); // 4294967295
+const max_col = std.math.maxInt(u16); // 65535
+
 // MESSAGES
 
 const log = @import("../log.zig");
@@ -182,10 +185,11 @@ const message = log.simpleMessage(&.{
     .{ .fatal, .unexpected_char_number, "unexpected character in number",  void },
 
     // escape sequences
-    .{ .err,   .invalid_esc,   "invalid escape sequence",      void },
-    .{ .fatal, .esc_no_start,  "escape sequence has no start", void },
-    .{ .fatal, .esc_no_end,    "escape sequence has no end",   void },
-    .{ .err,   .esc_too_large, "escape sequence is too large", void },
+    .{ .err,   .invalid_esc,    "invalid escape sequence",      void },
+    .{ .fatal, .esc_no_start,   "escape sequence has no start", void },
+    .{ .fatal, .esc_no_end,     "escape sequence has no end",   void },
+    .{ .err,   .esc_too_large,  "escape sequence is too large", void },
+    .{ .err,   .surrogate_half, "escape sequence cannot represent UTF-16 surrogate half (U+D800 <= U+{X} <= U+DFFF)", struct { u16 } },
     .{ .err,   .non_hex_in_hex_esc,          "non-hex character in hex escape sequence",             void },
     .{ .err,   .underscore_in_short_hex_esc, "underscores not allowed in short hex escape sequence", void },
 
@@ -197,11 +201,16 @@ const message = log.simpleMessage(&.{
     // miscellaneous
     .{ .err, .misplaced_top_level_doc, "top-level doc comments must be at the start of the script", void },
     .{ .err, .identifier_too_long,     "identifier exceeds maximum length ({} bytes > 64 bytes)",   struct { usize } },
+}, &.{
+    .{ .fatal, .row_too_long,   "row {} exceeded byte length limit ({} > 65535)", struct { u32, usize } },
+    .{ .fatal, .too_many_rows,  "exceeded maximum row count of 4294967295", void },
+    .{ .fatal, .unexpected_eof, "unexpected end-of-file", void },
 });
 // zig fmt: on
 
 pub const Message = message[0];
-const Logger = log.Logger(Message, message[1]);
+pub const Error = Allocator.Error || message[1];
+const Logger = log.Logger(Message, message[1], message[2]);
 
 // STRUCTURE
 
@@ -236,7 +245,7 @@ pub fn init(script: *Script) !*Self {
     return lexer;
 }
 
-// MISCELLANEOUS UTILITIES
+// MISCELLANEOUS TOOLS
 
 pub inline fn getLastToken(self: *Self) ?LocatedToken {
     if (self.output.items.len == 0) return null;
@@ -247,13 +256,44 @@ pub inline fn finished(self: Self) bool {
     return (self.pos.raw >= self.script.src.len or self.script.failed);
 }
 
-// IMPLEMENTATION
+// READER TOOLS
 
-inline fn addToken(self: *Self, span: Span, token: Token) !void {
+fn read(self: *Self, comptime pos: comptime_int) if (pos == 0) u21 else Error!u21 {
+    return switch (pos) {
+        0 => self.buf[0].code,
+        1 => if (self.buf[1]) |ahead|
+            ahead.code
+        else {
+            try self.logger.log(.unexpected_eof, .{ self.pos, .{} }, null);
+            unreachable;
+        },
+        else => {
+            var cursor = self.cursor;
+            var ahead: Rune = undefined;
+            inline for (0..pos) |_|
+                ahead = Rune.decodeCursor(self.script.src, &cursor) orelse
+                    try self.logger.log(.unexpected_eof, .{ self.pos, .{} }, null);
+
+            return ahead;
+        },
+    };
+}
+
+fn nextPos(self: *Self) Pos {
+    return .{
+        .raw = self.pos.raw + self.buf[0].len,
+        .row = self.pos.row,
+        .col = self.pos.col + 1,
+    };
+}
+
+// OUTPUT TOOLS
+
+inline fn addToken(self: *Self, span: Span, token: Token) Error!void {
     try self.output.append(self.script.allocator(), .{ .span = span, .token = token });
 }
 
-fn addWord(self: *Self, comptime symbol: bool) !void {
+fn addWord(self: *Self, comptime symbol: bool) Error!void {
     if (self.word.len > 0) {
         defer self.word.len = 0;
         self.word.ptr = self.script.src.ptr + self.start.raw;
@@ -277,16 +317,18 @@ fn addWord(self: *Self, comptime symbol: bool) !void {
         if (token) |tok| try self.addToken(span, tok);
     }
 
-    if (symbol) try self.addToken(.{ self.pos, self.pos }, .{ .symbol = @truncate(self.buf[0].code) });
+    if (symbol) try self.addToken(.{ self.pos, self.pos }, .{ .symbol = @truncate(self.read(0)) });
 }
 
-inline fn advanceRead(self: *Self) !void {
+// ADVANCE TOOLS
+
+inline fn advanceRead(self: *Self) Error!void {
     defer self.buf[1] = Rune.decodeCursor(self.script.src, &self.cursor);
     self.buf[0] = self.buf[1] orelse {
         // no next char, we're done
         self.pos.raw = self.script.src.len;
         self.pos.col += 1;
-        return error.UnexpectedEOF;
+        return self.logger.log(.unexpected_eof, .{ self.pos, .{} }, null);
     };
 }
 
@@ -294,11 +336,8 @@ inline fn advanceCheck(self: Self, char: u21) bool {
     return isNewLine(char) or (self.basic and unicode.isSpace(char));
 }
 
-const max_row = std.math.maxInt(u32); // 4294967295
-const max_col = std.math.maxInt(u16); // 65535
-
-fn advance(self: *Self) !void {
-    if (self.finished()) return error.UnexpectedEOF;
+fn advance(self: *Self) Error!void {
+    if (self.finished()) return self.logger.log(.unexpected_eof, .{ self.pos, .{} }, null);
 
     self.last = self.pos;
     try self.advanceRead();
@@ -316,13 +355,11 @@ fn advance(self: *Self) !void {
         if (new_line) {
             const len = (self.pos.raw - self.row_start.raw) - 1;
             if (len > max_col) {
-                const args = .{ self.pos.row + 1, self.script.name, len };
-                // we don't use the logger here because trying to print the huge row is a bad idea
-                log.scoped.err("row {} in script {s} exceeded byte length limit ({} > 65535)", args);
+                const msg = Message{ .row_too_long = .{ self.pos.row, len } };
+                try self.logger.log(msg, .{ self.row_start, self.pos }, null);
                 return error.RowTooLong;
             } else if (self.pos.row == max_row) {
-                // we don't use the logger here because we don't need to print the row
-                log.scoped.err("script {s} exceeded maximum row count of {}", .{ self.script.name, max_row });
+                try self.logger.log(.too_many_rows, .{ self.pos, .{} }, null);
                 return error.TooManyRows;
             }
 
@@ -351,7 +388,9 @@ fn advance(self: *Self) !void {
     }
 }
 
-inline fn tokenizeNumber(self: *Self, signed: bool) !void {
+// TOKENIZER METHODS
+
+inline fn tokenizeNumber(self: *Self, signed: bool) Error!void {
     self.basic = false;
     defer self.basic = true;
 
@@ -360,8 +399,8 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     var base: u8 = 10;
 
     if (signed) try self.advance();
-    if (self.buf[0].code == '0') {
-        base = switch (self.buf[1].?.code) {
+    if (self.read(0) == '0') {
+        base = switch (try self.read(1)) {
             'b', 'B' => 2,
             'o', 'O' => 8,
             'x', 'X' => 16,
@@ -379,7 +418,7 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     var exp_sign_reached = false;
 
     while (!end_reached) : (try self.advance()) {
-        switch (self.buf[0].code) {
+        switch (self.read(0)) {
             '0'...'1', '_' => {},
             '2'...'7' => if (base == 2) return self.logger.log(.{ .mismatched_bases = .{ 8, 2 } }, span, self.pos),
             '8'...'9' => if (base < 10) return self.logger.log(.{ .mismatched_bases = .{ 10, base } }, span, self.pos),
@@ -398,14 +437,14 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
                 if (out.float or base != 10) break;
                 // if character after . in number is not a number
                 // then it's not a float, instead a field access
-                if (!isNumberChar(self.buf[1].?.code)) break;
+                if (!isNumberChar(try self.read(1))) break;
                 out.float = true;
             },
             else => return self.logger.log(.unexpected_char_number, span, self.pos),
         }
 
         span[1] = self.pos;
-        end_reached = switch (self.buf[1].?.code) {
+        end_reached = switch (try self.read(1)) {
             '+', '-', '.' => false,
             else => |c| isSymbol(c) or isGap(c),
         };
@@ -416,14 +455,6 @@ inline fn tokenizeNumber(self: *Self, signed: bool) !void {
     try self.addToken(span, .{ .number = out });
 }
 
-inline fn nextPos(self: Self) Pos {
-    return .{
-        .raw = self.pos.raw + 1,
-        .row = self.pos.row,
-        .col = self.pos.col + 1,
-    };
-}
-
 fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
     self.basic = false;
     defer self.basic = true;
@@ -431,7 +462,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
     const esc_seq_start = self.pos;
     try self.advance();
 
-    switch (self.buf[0].code) {
+    switch (self.read(0)) {
         'n' => return '\n',
         'r' => return '\r',
         't' => return '\t',
@@ -443,7 +474,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
 
             var chars: [2]u8 = undefined;
             inline for (0..2) |i| {
-                chars[i] = @truncate(self.buf[0].code);
+                chars[i] = @truncate(self.read(0));
                 if (!isHexadecimalChar(chars[i])) {
                     const msg: Message = if (chars[i] == '_')
                         .underscore_in_short_hex_esc
@@ -461,38 +492,44 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
             const esc_char_start = self.nextPos();
             var non_hex_pos = Pos{};
 
-            if (self.buf[0].code != '{') {
+            if (self.read(0) != '{') {
                 try self.logger.log(.esc_no_start, .{ esc_seq_start, self.pos }, self.pos);
                 return error.InvalidCharacter;
             }
 
-            if (!isNewLine(self.buf[1].?.code)) parse: {
+            if (!isNewLine(try self.read(1))) parse: {
                 try self.advance(); // Advance past '{'.
 
                 var idx: usize = 5;
-                while (self.buf[0].code != '}') : (try self.advance()) {
-                    if (self.buf[0].code == '_') continue;
+                while (self.read(0) != '}') : (try self.advance()) {
+                    if (self.read(0) == '_') continue;
 
-                    if (!isHexadecimalChar(self.buf[0].code) or isNewLine(self.buf[1].?.code)) {
+                    if (!isHexadecimalChar(self.read(0)) or isNewLine(try self.read(1))) {
                         non_hex_pos = self.pos;
-                        while (self.buf[0].code != '}') try self.advance();
+                        while (self.read(0) != '}') try self.advance();
                         break :parse;
                     }
 
                     if (idx == 0) {
-                        while (self.buf[0].code != '}') try self.advance();
+                        while (self.read(0) != '}') try self.advance();
                         try self.logger.log(.esc_too_large, .{ esc_seq_start, self.pos }, null);
                         return error.Overflow;
                     } else idx -= 1;
                 }
 
-                return parseUnsigned(u21, self.script.src[esc_char_start.raw..self.pos.raw], 16) catch {
-                    try self.logger.log(.esc_too_large, .{ esc_seq_start, self.pos }, null); // InvalidCharacter is unreachable.
+                // could throw Overflow or InvalidCharacter, 6 max chars means it will always fit in u24, we ensure hex format
+                const char = parseUnsigned(u24, self.script.src[esc_char_start.raw..self.pos.raw], 16) catch unreachable;
+
+                if (char > 0x110000) {
+                    try self.logger.log(.esc_too_large, .{ esc_seq_start, self.pos }, null);
                     return error.Overflow;
-                };
+                } else if (char >= 0xD800 and char <= 0xDFFF) {
+                    try self.logger.log(.{ .surrogate_half = .{@truncate(char)} }, .{ esc_seq_start, self.pos }, null);
+                    return error.SurrogateHalf;
+                } else return @truncate(char);
             }
 
-            if (isNewLine(self.buf[1].?.code)) {
+            if (isNewLine(try self.read(1))) {
                 const fail_pos = self.nextPos();
                 try self.advance();
                 try self.logger.log(.esc_no_end, .{ esc_seq_start, fail_pos }, fail_pos);
@@ -509,7 +546,7 @@ fn parseEscapeSequence(self: *Self, exit: u21) !u21 {
     return error.InvalidCharacter;
 }
 
-pub fn next(self: *Self) !void {
+pub fn next(self: *Self) Error!void {
     if (self.finished()) return;
 
     const last_token = self.getLastToken();
@@ -517,7 +554,7 @@ pub fn next(self: *Self) !void {
 
     while (initial_len == self.output.items.len and !self.script.failed) : (try self.advance()) {
         if (self.word.len == 0) {
-            var signed_number = (self.buf[0].code == '-' or self.buf[0].code == '+') and isNumberChar(self.buf[1].?.code);
+            var signed_number = (self.read(0) == '-' or self.read(0) == '+') and isNumberChar(try self.read(1));
             // if the last token was an expression, it's arithmetic. otherwise, it's a signed number.
             if (signed_number and last_token != null)
                 signed_number = !switch (last_token.?.token) {
@@ -527,13 +564,13 @@ pub fn next(self: *Self) !void {
                     else => true,
                 };
 
-            if (isNumberChar(self.buf[0].code) or signed_number)
+            if (isNumberChar(self.read(0)) or signed_number)
                 return self.tokenizeNumber(signed_number);
 
             self.start = self.pos;
         }
 
-        char: switch (self.buf[0].code) {
+        char: switch (self.read(0)) {
             '"', '`' => |exit| { // String parser.
                 const start = self.pos;
                 var last = if (!self.fmt_string) blk: {
@@ -550,8 +587,8 @@ pub fn next(self: *Self) !void {
 
                 const real_start = last;
                 while (true) : (try self.advance()) {
-                    const end = self.buf[0].code == exit;
-                    if (end or (formatted and self.buf[0].code == '{')) {
+                    const end = self.read(0) == exit;
+                    if (end or (formatted and self.read(0) == '{')) {
                         if (last == real_start) {
                             out.data.text = self.script.src[last..self.pos.raw];
                             out.data.managed = false;
@@ -566,11 +603,18 @@ pub fn next(self: *Self) !void {
                         }
 
                         break;
-                    } else if (self.buf[0].code == '\\') {
+                    } else if (self.read(0) == '\\') {
                         try buffer.appendSlice(self.script.src[last..self.pos.raw]);
-                        const c = self.parseEscapeSequence(exit) catch if (self.script.failed) return else 0xFFFD;
-                        try unicode.writeCharUtf8(c, buffer.writer());
-                        last = self.buf[1].?.offset;
+                        last = self.nextPos().raw;
+
+                        const c = self.parseEscapeSequence(exit) catch if (self.script.failed) return else continue;
+                        unicode.writeCharUtf8(c, buffer.writer()) catch |e| switch (e) {
+                            // handled in parseEscapeSequence
+                            error.CannotEncodeSurrogateHalf,
+                            error.CharTooLarge,
+                            => unreachable,
+                            else => |err| return err,
+                        };
                     }
                 }
 
@@ -581,19 +625,19 @@ pub fn next(self: *Self) !void {
                 var char: u21 = 0xFFFD;
 
                 try self.advance();
-                if (self.buf[0].code == '\'') {
+                if (self.read(0) == '\'') {
                     try self.logger.log(.empty_char, .{ start, self.pos }, null);
-                } else if (self.buf[0].code == '\\') {
+                } else if (self.read(0) == '\\') {
                     char = self.parseEscapeSequence('\'') catch if (self.script.failed) return else 0xFFFD;
                     try self.advance();
-                } else if (self.buf[1].?.code == '\'') {
-                    char = self.buf[0].code;
+                } else if (try self.read(1) == '\'') {
+                    char = self.read(0);
                     try self.advance();
                 }
 
-                if (self.buf[0].code != '\'') {
-                    while (self.buf[0].code != '\'') : (try self.advance())
-                        if (isNewLine(self.buf[1].?.code))
+                if (self.read(0) != '\'') {
+                    while (self.read(0) != '\'') : (try self.advance())
+                        if (isNewLine(try self.read(1)))
                             return self.logger.log(.char_no_end, .{ start, start }, null);
 
                     if (char != 0xFFFD) try self.logger.log(.char_too_large, .{ start, self.pos }, null);
@@ -602,34 +646,34 @@ pub fn next(self: *Self) !void {
                 try self.addToken(.{ start, self.pos }, .{ .char = char });
             },
             // Symbol or comment.
-            '/' => if (self.buf[1].?.code == '/' or self.buf[1].?.code == '*') {
+            '/' => if (try self.read(1) == '/' or try self.read(1) == '*') {
                 var span = Span{ self.pos, self.pos };
                 var start = self.pos;
                 try self.advance();
                 var doc = false;
                 var out = Token.DocComment{};
 
-                switch (self.buf[0].code) {
+                switch (self.read(0)) {
                     // Single-line comment.
                     '/' => {
-                        if (isNewLine(self.buf[1].?.code)) continue else try self.advance();
-                        out.top_level = self.buf[0].code == '!';
-                        doc = out.top_level or self.buf[0].code == '/';
-                        if (isNewLine(self.buf[1].?.code)) continue else try self.advance();
+                        if (isNewLine(try self.read(1))) continue else try self.advance();
+                        out.top_level = self.read(0) == '!';
+                        doc = out.top_level or self.read(0) == '/';
+                        if (isNewLine(try self.read(1))) continue else try self.advance();
 
                         start = self.pos;
-                        while (!isNewLine(self.buf[1].?.code)) try self.advance();
+                        while (!isNewLine(try self.read(1))) try self.advance();
                         span[1] = self.pos;
                     },
                     // Multi-line comment.
                     '*' => {
                         try self.advance();
-                        out.top_level = self.buf[0].code == '!';
-                        doc = out.top_level or self.buf[0].code == '*';
+                        out.top_level = self.read(0) == '!';
+                        doc = out.top_level or self.read(0) == '*';
                         try self.advance();
 
                         start = self.pos;
-                        while (!(self.buf[0].code == '*' and self.buf[1].?.code == '/')) : (try self.advance()) span[1] = self.pos;
+                        while (!(self.read(0) == '*' and try self.read(1) == '/')) : (try self.advance()) span[1] = self.pos;
                         try self.advance();
                     },
                     else => unreachable,
@@ -648,7 +692,7 @@ pub fn next(self: *Self) !void {
                 try self.advance();
                 continue :char '`';
             } else try self.addWord(true), // Symbol.
-            else => if (!isSymbol(self.buf[0].code)) {
+            else => if (!isSymbol(self.read(0))) {
                 self.word.len += self.buf[0].len;
             } else try self.addWord(true), // Symbol.
         }

@@ -64,16 +64,19 @@ pub fn customLogFn(
 // std.log.Level with fatal added.
 pub const Level = enum { fatal, err, warn, info, debug };
 
-pub fn ToolsT(comptime Message: type) type {
+pub fn ToolsT(comptime Message: type, comptime Error: type) type {
     return struct {
         print: fn (*const Message, anytype) anyerror!void,
         level: ?fn (*const Message) Level,
+        fatality: ?fn (*const Message) Error!void,
+        printData: ?fn (*const Message) bool,
     };
 }
 
 fn MsgContainer(
     comptime Message: type,
-    comptime tools: ToolsT(Message),
+    comptime FatalErrors: type,
+    comptime tools: ToolsT(Message, FatalErrors),
 ) type {
     return struct {
         script: *Script,
@@ -97,6 +100,8 @@ fn MsgContainer(
                 self.span[0].row + 1,
                 self.span[0].col + 1,
             });
+
+            if (!self.printData()) return;
 
             // print affected line
             const src = self.script.src;
@@ -124,14 +129,23 @@ fn MsgContainer(
         }
 
         pub inline fn level(self: Self) Level {
-            return if (tools.level) |lvl| lvl(&self.msg) else Level.err;
+            return if (tools.level) |f| f(&self.msg) else Level.err;
+        }
+
+        pub inline fn fatality(self: Self) FatalErrors!void {
+            if (tools.fatality) |f| return f(&self.msg);
+        }
+
+        pub inline fn printData(self: Self) bool {
+            return if (tools.printData) |f| f(&self.msg) else true;
         }
     };
 }
 
 pub fn Logger(
     comptime Message: type,
-    comptime tools: ToolsT(Message),
+    comptime FatalErrors: type,
+    comptime tools: ToolsT(Message, FatalErrors),
 ) type {
     return struct {
         script: *Script,
@@ -140,14 +154,15 @@ pub fn Logger(
 
         const Self = @This();
 
-        pub const Container = MsgContainer(Message, tools);
+        pub const Container = MsgContainer(Message, FatalErrors, tools);
+        pub const Error = Allocator.Error || FatalErrors;
 
         pub inline fn deinit(self: Self) void {
             self.errors.deinit(self.script.allocator());
             self.others.deinit(self.script.allocator());
         }
 
-        pub fn log(self: *Self, msg: Message, span: Span, hi: ?Pos) !void {
+        pub fn log(self: *Self, msg: Message, span: Span, hi: ?Pos) Error!void {
             if (self.script.failed) return;
 
             const c = Container{ .script = self.script, .msg = msg, .span = span, .hi = hi };
@@ -163,7 +178,7 @@ pub fn Logger(
             };
         }
 
-        inline fn logInner(self: *Self, comptime level: std.log.Level, msg: Container) !void {
+        inline fn logInner(self: *Self, comptime level: std.log.Level, msg: Container) Error!void {
             try switch (level) { // store message
                 .err => self.errors.append(self.script.allocator(), msg),
                 else => self.others.append(self.script.allocator(), msg),
@@ -178,6 +193,8 @@ pub fn Logger(
                 .info => scoped.info("{}", .{msg}),
                 .debug => scoped.debug("{}", .{msg}),
             }
+
+            try msg.fatality();
         }
 
         pub inline fn failedEarly(self: Self) bool {
@@ -189,15 +206,15 @@ pub fn Logger(
 
 // SIMPLE MESSAGES
 
+const Type = std.builtin.Type;
+
 pub const SimpleMessageInfo = struct { Level, @Type(.enum_literal), []const u8, type };
 
 fn SimpleMessageT(comptime messages: []const SimpleMessageInfo) type {
-    const Type = std.builtin.Type;
-
     // make enum type
 
     comptime var enum_fields: [messages.len]Type.EnumField = undefined;
-    inline for (messages, 0..) |msg, i|
+    for (messages, 0..) |msg, i|
         enum_fields[i] = .{
             .name = @tagName(msg.@"1"),
             .value = i,
@@ -214,7 +231,7 @@ fn SimpleMessageT(comptime messages: []const SimpleMessageInfo) type {
     // make union type
 
     comptime var union_fields: [messages.len]Type.UnionField = undefined;
-    inline for (messages, 0..) |msg, i|
+    for (messages, 0..) |msg, i|
         union_fields[i] = .{
             .name = @tagName(msg.@"1"),
             .type = msg.@"3",
@@ -230,14 +247,55 @@ fn SimpleMessageT(comptime messages: []const SimpleMessageInfo) type {
     return @Type(.{ .@"union" = union_info });
 }
 
+fn pascalify(comptime string: []const u8) []const u8 {
+    comptime var output: []const u8 = "";
+    comptime var split = std.mem.splitScalar(u8, string, '_');
+
+    inline while (split.next()) |chunk| {
+        var capitalized: [chunk.len]u8 = chunk[0..].*;
+        capitalized[0] = switch (chunk[0]) {
+            'a'...'z' => |c| c - ('a' - 'A'),
+            else => |c| c,
+        };
+        output = output ++ capitalized;
+    }
+
+    return output;
+}
+
+fn SimpleErrorT(comptime messages: []const SimpleMessageInfo) type {
+    comptime var error_count: usize = 0;
+    for (messages) |msg| {
+        if (msg.@"0" == .fatal)
+            error_count += 1;
+    }
+
+    comptime var index: usize = 0;
+    comptime var errors: [error_count]Type.Error = undefined;
+    for (messages) |msg| {
+        if (msg.@"0" != .fatal) continue;
+        const pascal = pascalify(@tagName(msg.@"1"));
+        errors[index] = .{ .name = pascal ++ "" };
+        index += 1;
+    }
+
+    return @Type(.{ .error_set = errors[0..] });
+}
+
+fn SimpleToolsT(comptime messages: []const SimpleMessageInfo) type {
+    return ToolsT(SimpleMessageT(messages), SimpleErrorT(messages));
+}
+
 pub fn simpleMessage(
-    comptime messages: []const SimpleMessageInfo,
-) struct { type, ToolsT(SimpleMessageT(messages)) } {
-    const Message = SimpleMessageT(messages);
+    comptime data_msgs: []const SimpleMessageInfo,
+    comptime no_data_msgs: []const SimpleMessageInfo,
+) struct { type, type, SimpleToolsT(data_msgs ++ no_data_msgs) } {
+    const Message = SimpleMessageT(data_msgs ++ no_data_msgs);
+    const Error = SimpleErrorT(data_msgs ++ no_data_msgs);
 
     const Functions = struct {
         pub fn print(self: *const Message, writer: anytype) !void {
-            inline for (messages) |msg| {
+            inline for (data_msgs ++ no_data_msgs) |msg| {
                 if (self.* == msg.@"1") {
                     const data = @field(self.*, @tagName(msg.@"1"));
                     return switch (msg.@"3") {
@@ -249,11 +307,28 @@ pub fn simpleMessage(
         }
 
         pub fn level(self: *const Message) Level {
-            inline for (messages) |msg|
+            inline for (data_msgs ++ no_data_msgs) |msg|
                 if (self.* == msg.@"1") return msg.@"0";
             unreachable;
         }
+
+        pub fn fatality(self: *const Message) Error!void {
+            inline for (data_msgs ++ no_data_msgs) |msg|
+                if (self.* == msg.@"1" and msg.@"0" == .fatal)
+                    return @field(Error, pascalify(@tagName(msg.@"1")));
+        }
+
+        pub fn printData(self: *const Message) bool {
+            inline for (no_data_msgs) |msg|
+                if (self.* == msg.@"1") return false;
+            return true;
+        }
     };
 
-    return .{ Message, .{ .print = Functions.print, .level = Functions.level } };
+    return .{ Message, Error, .{
+        .print = Functions.print,
+        .level = Functions.level,
+        .fatality = Functions.fatality,
+        .printData = Functions.printData,
+    } };
 }
