@@ -14,8 +14,8 @@
             .hash = "zig_gc-0.0.0-ghUDpIK_RwCxLqAbWcKWGjOYA7c2iNWFTUi2FZeb9JUg",
         },
         .utils = .{
-            .url = "git+https://github.com/notsatvrn/zig-utils#5fa53457581e5fd17839c3d70913681e6d005d3e",
-            .hash = "utils-0.0.0-mXwaHn6aAADdZJeR_7pn4m1ro5Lc9HyLzK2TzYP-hQqO",
+            .url = "git+https://github.com/notsatvrn/zig-utils#9916cc4a2f2a8965b7c4161aa4f52f029b0de79b",
+            .hash = "utils-0.0.0-mXwaHhKeAADW-uILdCnbHCEqWexiXBXxbtUeSejaqN1N",
         },
     },
 

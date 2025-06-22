@@ -103,11 +103,16 @@ fn MsgContainer(
 
             if (!self.printData()) return;
 
-            // print affected line
+            // find affected line bounds
             const src = self.script.src;
             const row = self.script.rows.items[self.span[0].row];
-            var end: usize = row.raw + self.span[1].col + 1;
-            while (end < src.len and !unicode.isNewLine(src[end])) end += 1;
+            var end: usize = row.raw + row.len;
+            if (row.len == 0) { // will happen in the lexer
+                end += self.span[1].col + 1; // start from the column at least
+                while (end < src.len and !unicode.isNewLine(src[end])) end += 1;
+            }
+
+            // print affected line
             try writer.writeAll(src[row.raw..end]);
             try writer.writeByte('\n');
 
@@ -169,13 +174,13 @@ pub fn Logger(
             const level = c.level();
 
             if (level == .fatal) self.script.failed = true; // Fatal Fails Fast
-
             try switch (level) {
                 .fatal, .err => self.logInner(.err, c),
                 .warn => self.logInner(.warn, c),
                 .info => self.logInner(.info, c),
                 .debug => self.logInner(.debug, c),
             };
+            if (level == .fatal) try c.fatality();
         }
 
         inline fn logInner(self: *Self, comptime level: std.log.Level, msg: Container) Error!void {
@@ -193,8 +198,6 @@ pub fn Logger(
                 .info => scoped.info("{}", .{msg}),
                 .debug => scoped.debug("{}", .{msg}),
             }
-
-            try msg.fatality();
         }
 
         pub inline fn failedEarly(self: Self) bool {

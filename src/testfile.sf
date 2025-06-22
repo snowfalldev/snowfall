@@ -1,14 +1,55 @@
 // currently outputs almost every possible error in the lexer, intended for testing
 
-pub const test = "haiii 👋";
+pub const test: string = "haiii 👋";
 
 //! garbage-level doc comment
 
+// PUT THESE IN THE STANDARD LIB: std.generic
+
+type SignedInt = sbyte | short | int | long;
+type UnsignedInt = byte | ushort | uint | ulong;
+type Integer = SignedInt | UnsignedInt;
+
+type Floating = float | double;
+
+type Number = Integer | Floating;
+
+// struct generics test
+
+struct GenericStruct[I: Integer, F: Floating] {
+  integer: I,
+  floating: F,
+}
+
+type GenericFloatStruct[F: Floating] = GenericStruct[int, F];
+
+type IntFloatStruct = GenericFloatStruct[float];
+
+// function generics test
+
+func modifyInt(i: &mut int) {
+  *i += 1;
+}
+
+func modifyAnyInteger[T: Integer](i: &mut T) {
+  *i += 1;
+}
+
+func testGeneric() {
+  let mut my_int: int = 1;
+  modifyInt(&my_int);
+  assert my_int == 2;
+
+  // infers the type here
+  modifyIntegerGeneric(&my_int);
+  assert my_int == 3;
+}
+
 // this is a regular comment, doesn't get tokenized
 /// this is a doc comment, gets tokenized and attached to the function below
-pub func testFunc(str: string, num: number) void {
+pub func testFunc(mut str: string) {
   str[0] = '\x62';
-  var a = +43;
+  let mut a = +43;
   a += b-2;
   std.printf("%s %d\n", str, a);
   std.print("à́̀́̀́̀́̀́̀́̀́̀");
@@ -22,15 +63,17 @@ look it's multiline waow
 bigger doc comment
 im multiline too!!
 */
-pub func main() void {
-  const really_stupidly_long_identifier_that_doesnt_need_to_exist_just_stop = "lol";
-  testFunc(test, -1);
-  const um = '\n';
-  const um2 = 'na';
-  const um3 = '\xPF';
-  const um4 = '\x_F';
-  const um5 = '\u{DAAA}';
-  const yeah = '\xFF';
+pub func main() {
+  let really_stupidly_long_identifier_that_doesnt_need_to_exist_just_stop = "lol";
+  testFunc(test);
+  testGeneric();
+  // bunch of random tests
+  let um = '\n';
+  let um2 = 'na';
+  let um3 = '\xPF';
+  let um4 = '\x_F';
+  let um5 = '\u{DAAA}';
+  let yeah = '\xFF';
   std.println("Hello, world!");
   std.print('\u{1F480 }');
   std.print('\u{1F48 0}');
@@ -44,6 +87,6 @@ pub func main() void {
   std.println("0.2 * 3.3 = ", 6.6e-1);
   std.println(`squiggly brackets: \{}`);
   @panic("welp");
-  const epic_fail = '';
-  const epic_fail_2 = '
+  let epic_fail = '';
+  let epic_fail_2 = '
 }

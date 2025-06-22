@@ -14,6 +14,8 @@ const RowInfo = ast.RowInfo;
 
 // STRUCTURE
 
+const Stage = enum { init, lexer, parser };
+
 engine: *Engine,
 
 name: []const u8,
@@ -21,15 +23,10 @@ src: []const u8,
 
 arena: Arena,
 
-stage: Stage = undefined,
+stage: Stage = .init,
 rows: std.ArrayListUnmanaged(RowInfo) = .{},
-tokens: []const Lexer.LocatedToken = &.{},
+tokens: std.ArrayListUnmanaged(Lexer.LocatedToken) = .{},
 failed: bool = false,
-
-const Stage = union(enum) {
-    lexer: *Lexer,
-    parser: *Parser,
-};
 
 const Self = @This();
 
@@ -64,21 +61,24 @@ pub inline fn allocator(self: *Self) Allocator {
 }
 
 pub inline fn prepare(self: *Self) !void {
-    self.stage = .{ .lexer = try Lexer.init(self) };
-    while (!self.stage.lexer.finished())
-        self.stage.lexer.next() catch {
+    self.stage = .lexer;
+    {
+        var lexer = try Lexer.init(self);
+        defer {
+            self.engine.allocator.destroy(lexer);
+            self.tokens.shrinkAndFree(self.allocator(), self.tokens.items.len);
+            self.rows.shrinkAndFree(self.allocator(), self.rows.items.len);
+        }
+
+        while (!lexer.finished())
+            try lexer.next();
+
+        // non-fatal errors still mean we failed
+        if (lexer.logger.errors.items.len > 0) {
             self.failed = true;
-            //return error.LexerFailed;
-        };
-
-    if (self.stage.lexer.logger.errors.items.len > 0) {
-        self.failed = true;
-        //return error.LexerFailed;
+            return error.LexerFailed;
+        }
     }
-
-    self.tokens = try self.stage.lexer.output.toOwnedSlice(self.allocator());
-    self.engine.allocator.destroy(self.stage.lexer);
-    self.rows.shrinkAndFree(self.allocator(), self.rows.items.len);
 }
 
 // ROW TOOLS

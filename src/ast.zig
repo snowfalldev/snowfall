@@ -155,14 +155,32 @@ pub const Operation = struct {
 
 // TYPES
 pub const BasicType = enum(u8) {
-    int = 0x00,
-    float = 0x05,
-    string = 0x40,
-    char = 0x45,
-    bool = 0x50,
-    void = 0x60,
-    //func = 0x80,
-    //any = 0xFF,
+    // zig fmt: off
+    byte   = fromParts(0, 0),
+    ushort = fromParts(0, 1),
+    uint   = fromParts(0, 2),
+    ulong  = fromParts(0, 3),
+
+    sbyte = fromParts(1, 0),
+    short = fromParts(1, 1),
+    int   = fromParts(1, 2),
+    long  = fromParts(1, 3),
+
+    float  = fromParts(2, 0),
+    double = fromParts(2, 1),
+
+    string = fromParts(3, 0),
+    char   = fromParts(3, 1),
+
+    bool = fromParts(4, 0),
+    void = fromParts(5, 0),
+    any  = 0xFF,
+    // zig fmt: on
+
+    // type and subtype
+    fn fromParts(typ: u6, sub: u2) u8 {
+        return (@as(u8, typ) << 2) | sub;
+    }
 
     pub const string_map = utils.EnumStringMap(BasicType, .fastest);
 };
@@ -192,7 +210,7 @@ pub const Type = union(enum) {
 
 // CONSTANT DECLARATION
 pub const Constant = struct {
-    typ: ?Type = undefined,
+    typ: Type = undefined,
     val: Expression = undefined,
     public: bool = false,
 };
@@ -202,6 +220,7 @@ pub const Variable = struct {
     typ: ?Type = null,
     val: ?Expression = null,
     public: bool = false,
+    mutable: bool = false,
 };
 
 // VARIABLE ASSIGNMENT
@@ -217,11 +236,11 @@ pub const IndexAccess = struct {
 };
 
 // FUNCTIONS
-pub const Parameters = std.StringArrayHashMap(?Type);
+pub const Parameters = utils.hash.StringArrayHashMap(Type, .fastest);
 
 pub const FunctionType = struct {
     params: Parameters,
-    typ: ?*Type = null,
+    typ: *Type,
 };
 
 pub const Function = struct {
@@ -261,8 +280,8 @@ pub const Field = struct {
 
 // OBJECTS - STRUCT
 pub const Struct = struct {
-    fields: std.StringHashMap(Field),
-    methods: std.StringHashMap(Function),
+    fields: utils.hash.StringArrayHashMap(Field, .fastest),
+    methods: utils.hash.StringArrayHashMap(Function, .fastest),
 };
 
 // OBJECTS - ENUM
@@ -271,6 +290,7 @@ pub const EnumOption = union(enum) {
 };
 
 pub const Enum = struct {
-    options: std.StringHashMap(EnumOption),
-    methods: std.StringHashMap(Function),
+    options: utils.hash.StringArrayHashMap(void, .fastest),
+    methods: utils.hash.StringArrayHashMap(Function, .fastest),
+    tag_type: ?Type = null,
 };

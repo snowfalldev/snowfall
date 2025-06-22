@@ -48,12 +48,10 @@ pub const Token = union(enum) {
         fmt: ?enum { part, end } = null,
     };
 
-    /// Current count: 31
+    /// Current count: 29
     pub const Keyword = enum {
         // zig fmt: off
         as, // casting
-
-        @"and", @"or", // boolean operations
 
         throw,    // throw error
         @"try",   // try function which throws errors
@@ -65,15 +63,15 @@ pub const Token = union(enum) {
         @"switch", // define switch statement
 
         @"pub",   // publicize declaration
-        @"const", // declare constant variable
-        @"var",   // declare mutable variable
+        @"const", // declare constant value
+        @"let",   // declare runtime variable
+        @"mut",   // make variable mutable
         @"type",  // declare type
 
         func,        // define function
         @"return",   // return from function
         @"defer",    // execute when function returns
         @"errdefer", // execute when function throws error
-        ref,         // get mutable reference to param
 
         @"struct", // define struct
         @"enum",   // define enum
@@ -248,8 +246,8 @@ pub fn init(script: *Script) !*Self {
 // MISCELLANEOUS TOOLS
 
 pub inline fn getLastToken(self: *Self) ?LocatedToken {
-    if (self.output.items.len == 0) return null;
-    return self.output.items[self.output.items.len - 1];
+    if (self.script.tokens.items.len == 0) return null;
+    return self.script.tokens.items[self.script.tokens.items.len - 1];
 }
 
 pub inline fn finished(self: Self) bool {
@@ -290,7 +288,7 @@ fn nextPos(self: *Self) Pos {
 // OUTPUT TOOLS
 
 inline fn addToken(self: *Self, span: Span, token: Token) Error!void {
-    try self.output.append(self.script.allocator(), .{ .span = span, .token = token });
+    try self.script.tokens.append(self.script.allocator(), .{ .span = span, .token = token });
 }
 
 fn addWord(self: *Self, comptime symbol: bool) Error!void {
@@ -353,16 +351,17 @@ fn advance(self: *Self) Error!void {
         const new_line = isNewLine(code1);
 
         if (new_line) {
+            if (self.pos.row == max_row) {
+                try self.logger.log(.too_many_rows, .{ self.pos, .{} }, null);
+                return error.TooManyRows;
+            }
+
             const len = (self.pos.raw - self.row_start.raw) - 1;
             if (len > max_col) {
                 const msg = Message{ .row_too_long = .{ self.pos.row, len } };
                 try self.logger.log(msg, .{ self.row_start, self.pos }, null);
                 return error.RowTooLong;
-            } else if (self.pos.row == max_row) {
-                try self.logger.log(.too_many_rows, .{ self.pos, .{} }, null);
-                return error.TooManyRows;
             }
-
             self.script.rows.items[self.pos.row].len = @truncate(len);
 
             self.pos.row += 1;
@@ -550,9 +549,9 @@ pub fn next(self: *Self) Error!void {
     if (self.finished()) return;
 
     const last_token = self.getLastToken();
-    const initial_len = self.output.items.len;
+    const initial_len = self.script.tokens.items.len;
 
-    while (initial_len == self.output.items.len and !self.script.failed) : (try self.advance()) {
+    while (initial_len == self.script.tokens.items.len and !self.script.failed) : (try self.advance()) {
         if (self.word.len == 0) {
             var signed_number = (self.read(0) == '-' or self.read(0) == '+') and isNumberChar(try self.read(1));
             // if the last token was an expression, it's arithmetic. otherwise, it's a signed number.

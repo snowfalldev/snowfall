@@ -17,9 +17,9 @@ pub fn main() !void {
     var engine = Engine.init(allocator);
     defer engine.deinit();
     var module = try engine.registerScript("main", data);
-    try module.prepare();
+    module.prepare() catch {}; // ignore errors for now (testing)
 
-    for (module.tokens) |token|
+    for (module.tokens.items) |token|
         std.debug.print("({}, {}..{}) {}\n", .{
             token.span[0].raw,
             token.span[0],
